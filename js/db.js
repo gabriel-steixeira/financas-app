@@ -135,14 +135,42 @@ const DB = {
 
     async getInvestimentos(pessoa, mes) {
         try {
-            const snapshot = await database.ref('investimentos').orderByChild('pessoa').equalTo(pessoa).once('value');
+            let snapshot;
+            if (pessoa === 'todos') {
+                snapshot = await database.ref('investimentos').once('value');
+            } else {
+                snapshot = await database.ref('investimentos').orderByChild('pessoa').equalTo(pessoa).once('value');
+            }
+
             const data = snapshot.val() || {};
             const result = {};
 
             Object.entries(data).forEach(([id, inv]) => {
                 if (inv.mes !== mes) return;
-                result[inv.nome] = {
+                // Agrupa por nome para exibir consolidado, mas mantém ID para edição se for individual
+                // Na visualização "todos", se houver nomes iguais de pessoas diferentes, o ideal seria separar ou somar?
+                // O layout atual agrupa por nome. Vamos manter simples: lista de objetos.
+
+                // Ajuste: retornar array de objetos em vez de objeto agrupado por nome, 
+                // para facilitar o render e edição individual.
+                // O app.js vai tratar o agrupamento se necessário ou listar tudo.
+                // Mas para manter compatibilidade com o app.js atual que espera objeto chaveado pelo nome:
+
+                /* 
+                   ATENÇÃO: O app.js original espera: result[nome] = { id, nome, valor, moeda }
+                   Isso tem um problema: se tiver 2 investimentos com mesmo nome, sobrescreve.
+                   Vou alterar para retornar um ARRAY de investimentos, e ajustar o app.js depois.
+                   Mas para não quebrar AGORA, vou usar uma chave única.
+                */
+
+                const key = pessoa === 'todos' ? `${inv.nome} (${inv.pessoa})` : inv.nome;
+                // Se for edição, precisa do ID. Vamos retornar um objeto onde a chave é o ID para facilitar o CRUD,
+                // ou um array. O app.js faz `Object.entries(inv.personInv)`.
+                // Vamos mudar a estratégia: retornar um objeto onde a chave é o ID do firebase.
+
+                result[id] = {
                     id,
+                    pessoa: inv.pessoa,
                     nome: inv.nome,
                     valor: inv.valor,
                     moeda: inv.moeda || 'BRL'
@@ -156,16 +184,68 @@ const DB = {
         }
     },
 
+    async addInvestimento(dados) {
+        try {
+            const ref = database.ref('investimentos').push();
+            await ref.set(dados);
+            console.log('✅ Investimento adicionado:', ref.key);
+            return ref.key;
+        } catch (error) {
+            console.error('❌ Erro ao adicionar investimento:', error);
+            return null;
+        }
+    },
+
+    async updateInvestimento(id, dados) {
+        try {
+            await database.ref(`investimentos/${id}`).update(dados);
+            console.log('✅ Investimento atualizado:', id);
+            return true;
+        } catch (error) {
+            console.error('❌ Erro ao atualizar investimento:', error);
+            return false;
+        }
+    },
+
+    async deleteInvestimento(id) {
+        try {
+            await database.ref(`investimentos/${id}`).remove();
+            console.log('🗑️ Investimento removido:', id);
+            return true;
+        } catch (error) {
+            console.error('❌ Erro ao remover investimento:', error);
+            return false;
+        }
+    },
+
+    async getCotacaoDolar(mes) {
+        try {
+            const snapshot = await database.ref(`meta/cotacaoDolar/${mes}`).once('value');
+            return snapshot.val() || 5.45; // Valor padrão se não tiver
+        } catch (error) {
+            console.error('❌ Erro ao buscar cotação dólar:', error);
+            return 5.45;
+        }
+    },
+
+    async setCotacaoDolar(mes, valor) {
+        try {
+            await database.ref(`meta/cotacaoDolar/${mes}`).set(valor);
+            console.log(`✅ Cotação dólar ${mes}: ${valor}`);
+            return true;
+        } catch (error) {
+            console.error('❌ Erro ao salvar cotação dólar:', error);
+            return false;
+        }
+    },
+
     async getTotalInvestimentos(mes) {
         try {
             const snapshot = await database.ref('investimentos').once('value');
             const data = snapshot.val() || {};
             let total = 0;
-            let cotacaoDolar = 5.45;
 
-            // Get cotacao from meta
-            const metaSnap = await database.ref('meta/cotacaoDolar').once('value');
-            if (metaSnap.val()) cotacaoDolar = metaSnap.val();
+            const cotacaoDolar = await this.getCotacaoDolar(mes);
 
             Object.values(data).forEach(inv => {
                 if (inv.mes !== mes) return;

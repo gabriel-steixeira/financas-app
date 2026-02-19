@@ -6,7 +6,7 @@
   'use strict';
 
   // State
-  let currentPerson = 'gabriel';
+  let currentPerson = 'todos'; // Padrão: todos
   let currentMonth = 'fevereiro';
   let currentPage = 'dashboard';
   let cachedData = null; // { receitas, gastos, faturas, totalReceitas, totalGastos, saldo }
@@ -55,28 +55,25 @@
       try {
         const mesKey = monthKeys[currentMonth];
         const personInv = await DB.getInvestimentos(currentPerson, mesKey);
-        const totalInfo = await DB.getTotalInvestimentos(mesKey);
-        cachedInvestimentos = { personInv, totalInfo };
+        // personInv agora é um objeto { id: { ... } }
+
+        const { total, cotacaoDolar } = await DB.getTotalInvestimentos(mesKey);
+
+        // Se getTotalInvestimentos retorna total misturado, precisamos ajustar para mostrar na tela o total correto
+        // na verdade o getTotalInvestimentos já calcula convertendo USD.
+        // O renderInvestimentos vai precisar saber a cotação para exibir e converter itens individuais.
+
+        cachedInvestimentos = {
+          personInv,
+          totalInfo: { total, cotacaoDolar }
+        };
         return;
       } catch (e) {
         console.warn('⚠️ Firebase investimentos falhou:', e);
       }
     }
-    // Fallback
-    const inv = FINANCAS_DATA?.investimentos;
-    if (inv) {
-      const personInv = inv[currentPerson] || {};
-      const entries = {};
-      Object.entries(personInv).forEach(([name, vals]) => {
-        entries[name] = { nome: name, valor: vals[currentMonth] || 0, moeda: name.includes('USD') ? 'USD' : 'BRL' };
-      });
-      cachedInvestimentos = {
-        personInv: entries,
-        totalInfo: { total: inv.totais?.[currentMonth] || 0, cotacaoDolar: inv.cotacaoDolar || 5.45 }
-      };
-    } else {
-      cachedInvestimentos = { personInv: {}, totalInfo: { total: 0, cotacaoDolar: 5.45 } };
-    }
+    // Fallback (apenas para não quebrar se falhar, mas o foco é Firebase)
+    cachedInvestimentos = { personInv: {}, totalInfo: { total: 0, cotacaoDolar: 5.45 } };
   }
 
   async function loadChartData() {
@@ -156,20 +153,45 @@
 
   // ====== HEADER ======
   function renderHeader() {
+    // Ícone baseando na seleção
+    let icon = '👥'; // todos
+    let label = 'Todos';
+    let activeClass = '';
+
+    if (currentPerson === 'gabriel') { icon = '👦🏻'; label = 'Gabriel'; activeClass = 'person-gabriel'; }
+    else if (currentPerson === 'clara') { icon = '👩🏻'; label = 'Clara'; activeClass = 'person-clara'; }
+
     return `
-      <div class="header">
-        <div class="header-top">
-          <div>
-            <h1>💰 Finanças</h1>
-            <div class="header-subtitle">${monthFull[currentMonth]}</div>
-          </div>
-          <div class="person-toggle">
-            <button class="person-btn ${currentPerson === 'gabriel' ? 'active' : ''}" data-person="gabriel">Gabriel</button>
-            <button class="person-btn ${currentPerson === 'clara' ? 'active' : ''}" data-person="clara">Clara</button>
+    <div class="header">
+      <div class="header-top">
+        <div>
+          <h1>💰 Finanças</h1>
+          <div class="header-subtitle">${monthFull[currentMonth]}</div>
+        </div>
+        
+        <div class="person-filter-container">
+          <button class="person-filter-btn ${activeClass}" id="personFilterBtn">
+            <span class="p-icon">${icon}</span>
+            <span class="p-label">${label}</span>
+            <span class="p-arrow">▼</span>
+          </button>
+          
+          <div class="person-dropdown" id="personDropdown">
+            <div class="p-item" data-person="todos">
+              <span class="p-icon">👥</span> Todos
+            </div>
+            <div class="p-item" data-person="gabriel">
+              <span class="p-icon">👦🏻</span> Gabriel
+            </div>
+            <div class="p-item" data-person="clara">
+              <span class="p-icon">👩🏻</span> Clara
+            </div>
           </div>
         </div>
+
       </div>
-    `;
+    </div>
+  `;
   }
 
   // ====== MONTH SELECTOR ======
@@ -429,44 +451,66 @@
     const inv = cachedInvestimentos;
     if (!inv) return renderInvestimentosHidden();
 
-    const entries = Object.entries(inv.personInv);
-    const totalPerson = entries.reduce((sum, [, v]) => sum + (v.valor || 0), 0);
+    const cotacao = inv.totalInfo.cotacaoDolar || 5.45;
+    const entries = Object.values(inv.personInv); // Agora é um objeto { id: { ... } } ou array do fallback
+
+    // Calcular total somando BRL + USD convertido
+    const totalReal = entries.reduce((sum, v) => {
+      let val = v.valor || 0;
+      if (v.moeda === 'USD') val *= cotacao;
+      return sum + val;
+    }, 0);
+
+    const isIndividual = currentPerson !== 'todos';
 
     return `
-      <div class="page active" id="page-investimentos">
-        <div class="balance-card" style="background: linear-gradient(135deg, #0a1a2e 0%, #0f2a4d 50%, #143d6b 100%);">
-          <div class="label">Total Investimentos (${currentPerson === 'gabriel' ? 'Gabriel' : 'Clara'})</div>
-          <div class="amount positive">${formatCurrency(totalPerson)}</div>
-          <div class="detail">
-            <span>Cotação dólar: ${formatCurrency(inv.totalInfo.cotacaoDolar)}</span>
-          </div>
-        </div>
-
-        <div class="section-title">
-          ${currentPerson === 'gabriel' ? 'Gabriel' : 'Clara'} - Investimentos
-          <span class="count">${entries.length} aplicações</span>
-        </div>
-
-        ${entries.map(([name, data], i) => {
-      const isUsd = data.moeda === 'USD';
-      return `
-            <div class="invest-card" style="animation-delay: ${i * 100}ms">
-              <div class="invest-header">
-                <div class="invest-name">${data.nome || name}</div>
-                <div class="invest-value">${isUsd ? formatCurrency(data.valor, 'USD') : formatCurrency(data.valor)}</div>
-              </div>
-            </div>
-          `;
-    }).join('')}
-
-        <div class="chart-container" style="margin-top: 20px;">
-          <h3>💎 Patrimônio Total</h3>
-          <div style="text-align: center; font-size: 1.5rem; color: var(--green); padding: 20px;">
-            ${formatCurrency(inv.totalInfo.total)}
+    <div class="page active" id="page-investimentos">
+      <div class="balance-card" style="background: linear-gradient(135deg, #0a1a2e 0%, #0f2a4d 50%, #143d6b 100%);">
+        <div class="label">Total Investimentos (${currentPerson === 'todos' ? 'Consolidado' : (currentPerson === 'gabriel' ? 'Gabriel' : 'Clara')})</div>
+        <div class="amount positive">${formatCurrency(totalReal)}</div>
+        <div class="detail" style="flex-direction: column; align-items: start;">
+          <span>Cotação Dólar (fim do mês):</span>
+          <div class="cotacao-input-container">
+            <span>R$</span>
+            <input type="number" class="cotacao-input" value="${cotacao}" step="0.01" onchange="saveCotacao(this.value)">
           </div>
         </div>
       </div>
-    `;
+
+      <div class="section-title">
+        ${currentPerson === 'todos' ? 'Todos' : (currentPerson === 'gabriel' ? 'Gabriel' : 'Clara')} - Carteira
+        <span class="count">${entries.length} ativos</span>
+      </div>
+
+      ${entries.map((data, i) => {
+      const isUsd = data.moeda === 'USD';
+      const valorBrl = isUsd ? (data.valor * cotacao) : data.valor;
+
+      return `
+          <div class="invest-card" style="animation-delay: ${i * 50}ms">
+            <div>
+              <div class="invest-name">${data.nome} ${currentPerson === 'todos' ? `<small style="opacity:0.6">(${data.pessoa})</small>` : ''}</div>
+              <div class="invest-value">
+                ${isUsd ? `US$ ${data.valor.toFixed(2)} <small style="display:block; font-size:0.8em; opacity:0.7">≈ ${formatCurrency(valorBrl)}</small>` : formatCurrency(data.valor)}
+              </div>
+            </div>
+            ${isIndividual ? `
+            <div class="invest-actions">
+              <button class="btn-action-inv btn-edit-inv" data-id="${data.id}">✎</button>
+              <button class="btn-action-inv btn-del-inv" data-id="${data.id}">✕</button>
+            </div>
+            ` : ''}
+          </div>
+        `;
+    }).join('')}
+      
+      ${isIndividual ? `
+      <button class="fab-add" onclick="openAddInvestimentoModal()">+</button>
+      ` : ''}
+
+      <div style="height: 100px;"></div>
+    </div>
+  `;
   }
 
   // ====== TRANSACTION ITEM ======
@@ -605,7 +649,7 @@
         </div>
         <div class="form-group">
           <label>Categoria</label>
-          <select id="f-categoria" required>
+          <select type="text" id="f-categoria" required>
             ${categorias.map(c => `<option value="${c}">${c}</option>`).join('')}
           </select>
         </div>
@@ -649,6 +693,99 @@
     }
   };
 
+  // ====== CRUD INVESTIMENTOS UI ======
+  window.saveCotacao = async function (val) {
+    const novaCotacao = parseFloat(val);
+    if (isNaN(novaCotacao)) return;
+
+    if (useFirebase && typeof DB !== 'undefined') {
+      await DB.setCotacaoDolar(monthKeys[currentMonth], novaCotacao);
+      await render(); // Recarrega tudo
+    }
+  };
+
+  window.openAddInvestimentoModal = function () {
+    showModal(`
+    <div class="modal-header">
+      <h3>💎 Novo Investimento</h3>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <form id="add-inv-form" onsubmit="submitInvestimento(event)">
+      <div class="form-group">
+        <label>Nome do Ativo</label>
+        <input type="text" id="inv-nome" placeholder="Ex: Ações Apple, CDB..." required>
+      </div>
+      <div class="form-group">
+        <label>Valor</label>
+        <input type="number" id="inv-valor" step="0.01" min="0" placeholder="0.00" required>
+      </div>
+      <div class="form-group">
+        <label>Moeda</label>
+        <select id="inv-moeda">
+          <option value="BRL">Real (R$)</option>
+          <option value="USD">Dólar (US$)</option>
+        </select>
+      </div>
+      <button type="submit" class="config-btn save" style="width:100%; margin-top: 12px;">✅ Salvar</button>
+    </form>
+  `);
+  };
+
+  window.openEditInvestimentoModal = function (id) {
+    const inv = cachedInvestimentos.personInv[id]; // cachedInvestimentos.personInv agora é map ID -> obj
+    if (!inv) return;
+
+    showModal(`
+    <div class="modal-header">
+      <h3>✏️ Editar Investimento</h3>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <form id="edit-inv-form" onsubmit="submitInvestimento(event, '${id}')">
+      <div class="form-group">
+        <label>Nome do Ativo</label>
+        <input type="text" id="inv-nome" value="${inv.nome}" required>
+      </div>
+      <div class="form-group">
+        <label>Valor</label>
+        <input type="number" id="inv-valor" step="0.01" min="0" value="${inv.valor}" required>
+      </div>
+      <div class="form-group">
+        <label>Moeda</label>
+        <select id="inv-moeda">
+          <option value="BRL" ${inv.moeda === 'BRL' ? 'selected' : ''}>Real (R$)</option>
+          <option value="USD" ${inv.moeda === 'USD' ? 'selected' : ''}>Dólar (US$)</option>
+        </select>
+      </div>
+      <button type="submit" class="config-btn save" style="width:100%; margin-top: 12px;">💾 Atualizar</button>
+    </form>
+  `);
+  };
+
+  window.submitInvestimento = async function (e, id = null) {
+    e.preventDefault();
+    const dados = {
+      pessoa: currentPerson,
+      mes: monthKeys[currentMonth], // Usa mês selecionado
+      nome: document.getElementById('inv-nome').value,
+      valor: parseFloat(document.getElementById('inv-valor').value),
+      moeda: document.getElementById('inv-moeda').value
+    };
+
+    if (id) {
+      await DB.updateInvestimento(id, dados);
+    } else {
+      await DB.addInvestimento(dados);
+    }
+    closeModal();
+    await render();
+  };
+
+  window.deleteInvestimentoUI = async function (id) {
+    if (!confirm('Remover este investimento?')) return;
+    await DB.deleteInvestimento(id);
+    await render();
+  };
+
   window.deleteItem = async function (id) {
     if (!confirm('Remover esta transação?')) return;
     const ok = await DB.deleteTransacao(id);
@@ -658,14 +795,40 @@
   // ====== EVENTS ======
   function bindEvents() {
     document.addEventListener('click', (e) => {
-      const personBtn = e.target.closest('.person-btn');
-      if (personBtn) { currentPerson = personBtn.dataset.person; render(); return; }
+      // Dropdown toggle
+      const filterBtn = e.target.closest('#personFilterBtn');
+      if (filterBtn) {
+        document.getElementById('personDropdown').classList.toggle('show');
+        return;
+      }
+
+      // Dropdown item selection
+      const pItem = e.target.closest('.p-item');
+      if (pItem) {
+        currentPerson = pItem.dataset.person;
+        document.getElementById('personDropdown').classList.remove('show');
+        render();
+        return;
+      }
+
+      // Close dropdown if clicked outside
+      if (!e.target.closest('.person-filter-container')) {
+        const dd = document.getElementById('personDropdown');
+        if (dd && dd.classList.contains('show')) dd.classList.remove('show');
+      }
 
       const monthBtn = e.target.closest('.month-btn');
       if (monthBtn) { currentMonth = monthBtn.dataset.month; render(); return; }
 
       const navItem = e.target.closest('.nav-item');
       if (navItem) { currentPage = navItem.dataset.page; render(); return; }
+
+      // Investimento Edit/Delete (delegation)
+      const btnEditInv = e.target.closest('.btn-edit-inv');
+      if (btnEditInv) { openEditInvestimentoModal(btnEditInv.dataset.id); return; }
+
+      const btnDelInv = e.target.closest('.btn-del-inv');
+      if (btnDelInv) { deleteInvestimentoUI(btnDelInv.dataset.id); return; }
     });
   }
 
