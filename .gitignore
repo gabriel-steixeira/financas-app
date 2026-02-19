@@ -1,0 +1,12 @@
+# Extracted data
+extracted_html/
+*.pdf
+*.zip
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
