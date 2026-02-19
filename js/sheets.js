@@ -1,9 +1,13 @@
 // =============================================
 // Google Sheets API Integration
-// Credenciais armazenadas no localStorage (nunca no código!)
+// API Key restrita ao domínio gabriel-steixeira.github.io
 // =============================================
 
 const SheetsService = {
+    // Credenciais (API Key restrita por domínio no Google Cloud Console)
+    CLIENT_ID: '354544034041-ed6s58ldaj9gdg22rjh5harfvpj60ooq.apps.googleusercontent.com',
+    API_KEY: 'AIzaSyBNHupgWFLbLQX-PLcsg6jpKXGPRD9E4b0',
+    SPREADSHEET_ID: '1hLCMrxviOqD3KRGInlHlApVIMgHEMQKoycv5v67k4LY',
     SCOPES: 'https://www.googleapis.com/auth/spreadsheets',
     DISCOVERY_DOC: 'https://sheets.googleapis.com/$discovery/rest?version=v4',
 
@@ -11,70 +15,43 @@ const SheetsService = {
     isSignedIn: false,
     tokenClient: null,
 
-    // Get credentials from localStorage
     getConfig() {
         return {
-            clientId: localStorage.getItem('sheets_client_id') || '',
-            apiKey: localStorage.getItem('sheets_api_key') || '',
-            spreadsheetId: localStorage.getItem('sheets_spreadsheet_id') || '',
+            clientId: this.CLIENT_ID,
+            apiKey: this.API_KEY,
+            spreadsheetId: this.SPREADSHEET_ID,
         };
     },
 
-    // Save credentials to localStorage
-    saveConfig(clientId, apiKey, spreadsheetId) {
-        if (clientId) localStorage.setItem('sheets_client_id', clientId);
-        if (apiKey) localStorage.setItem('sheets_api_key', apiKey);
-        if (spreadsheetId) localStorage.setItem('sheets_spreadsheet_id', spreadsheetId);
-    },
-
-    // Clear credentials
-    clearConfig() {
-        localStorage.removeItem('sheets_client_id');
-        localStorage.removeItem('sheets_api_key');
-        localStorage.removeItem('sheets_spreadsheet_id');
-        this.isInitialized = false;
-        this.isSignedIn = false;
-    },
-
-    // Check if configured
     isConfigured() {
-        const config = this.getConfig();
-        return !!(config.apiKey && config.spreadsheetId);
+        return true;
     },
 
     // Initialize the Google API (GAPI + GIS)
     async init() {
-        const config = this.getConfig();
-        if (!config.apiKey || !config.spreadsheetId) {
-            console.log('⚠️ Google Sheets: Credenciais não configuradas. Vá em Configurações.');
-            return false;
-        }
-
         try {
             // Load GAPI
             await this.loadScript('https://apis.google.com/js/api.js');
             await new Promise((resolve) => gapi.load('client', resolve));
             await gapi.client.init({
-                apiKey: config.apiKey,
+                apiKey: this.API_KEY,
                 discoveryDocs: [this.DISCOVERY_DOC],
             });
 
             // Load GIS (Google Identity Services) for OAuth
-            if (config.clientId) {
-                await this.loadScript('https://accounts.google.com/gsi/client');
-                this.tokenClient = google.accounts.oauth2.initTokenClient({
-                    client_id: config.clientId,
-                    scope: this.SCOPES,
-                    callback: (response) => {
-                        if (response.error) {
-                            console.error('❌ Erro de autenticação:', response.error);
-                            return;
-                        }
-                        this.isSignedIn = true;
-                        console.log('✅ Autenticado com Google Sheets');
-                    },
-                });
-            }
+            await this.loadScript('https://accounts.google.com/gsi/client');
+            this.tokenClient = google.accounts.oauth2.initTokenClient({
+                client_id: this.CLIENT_ID,
+                scope: this.SCOPES,
+                callback: (response) => {
+                    if (response.error) {
+                        console.error('❌ Erro de autenticação:', response.error);
+                        return;
+                    }
+                    this.isSignedIn = true;
+                    console.log('✅ Autenticado com Google Sheets');
+                },
+            });
 
             this.isInitialized = true;
             console.log('✅ Google Sheets API inicializada');
@@ -127,11 +104,10 @@ const SheetsService = {
     // Read data from a sheet
     async readSheet(range) {
         if (!this.isInitialized) return null;
-        const config = this.getConfig();
 
         try {
             const response = await gapi.client.sheets.spreadsheets.values.get({
-                spreadsheetId: config.spreadsheetId,
+                spreadsheetId: this.SPREADSHEET_ID,
                 range: range,
             });
             return response.result.values;
@@ -147,11 +123,10 @@ const SheetsService = {
             console.error('Precisa estar autenticado para escrever');
             return false;
         }
-        const config = this.getConfig();
 
         try {
             await gapi.client.sheets.spreadsheets.values.append({
-                spreadsheetId: config.spreadsheetId,
+                spreadsheetId: this.SPREADSHEET_ID,
                 range: range,
                 valueInputOption: 'USER_ENTERED',
                 resource: { values: values },
@@ -165,7 +140,6 @@ const SheetsService = {
 
     // Get connection status
     getStatus() {
-        if (!this.isConfigured()) return 'not-configured';
         if (!this.isInitialized) return 'offline';
         if (!this.isSignedIn) return 'read-only';
         return 'connected';
@@ -173,7 +147,6 @@ const SheetsService = {
 
     getStatusLabel() {
         const labels = {
-            'not-configured': '⚙️ Não configurado',
             'offline': '🔴 Offline',
             'read-only': '🟡 Somente leitura',
             'connected': '🟢 Conectado',

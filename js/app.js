@@ -428,9 +428,8 @@
 
   // ====== CONFIGURAÇÕES ======
   function renderConfig() {
-    const config = SheetsService.getConfig();
-    const status = SheetsService.getStatus();
     const statusLabel = SheetsService.getStatusLabel();
+    const status = SheetsService.getStatus();
 
     return `
       <div class="page ${currentPage === 'config' ? 'active' : ''}" id="page-config">
@@ -438,58 +437,42 @@
           <div class="label">Google Sheets</div>
           <div class="amount" style="font-size: 1.4rem; color: var(--text-primary);">${statusLabel}</div>
           <div class="detail">
-            <span>Credenciais salvas no seu navegador (não no código)</span>
+            <span>API Key restrita ao domínio • Planilha conectada</span>
           </div>
         </div>
 
-        <div class="section-title">🔑 Credenciais</div>
+        <div class="section-title">🔗 Conexão</div>
 
         <div style="display: flex; flex-direction: column; gap: 14px; margin-bottom: 24px;">
-          <div class="config-field">
-            <label class="config-label">API Key</label>
-            <input type="password" id="cfg-api-key" class="config-input" 
-              placeholder="Cole sua API Key aqui" 
-              value="${config.apiKey}" />
-            <span class="config-hint">Criada no Google Cloud Console → Credenciais → Chave de API</span>
-          </div>
+          <button class="config-btn test" onclick="testConnection()">🔌 Testar Conexão com Planilha</button>
 
-          <div class="config-field">
-            <label class="config-label">Client ID (OAuth)</label>
-            <input type="password" id="cfg-client-id" class="config-input" 
-              placeholder="Cole seu Client ID aqui" 
-              value="${config.clientId}" />
-            <span class="config-hint">Necessário para escrita. Formato: xxx.apps.googleusercontent.com</span>
-          </div>
-
-          <div class="config-field">
-            <label class="config-label">Spreadsheet ID</label>
-            <input type="text" id="cfg-spreadsheet-id" class="config-input" 
-              placeholder="ID da planilha" 
-              value="${config.spreadsheetId}" />
-            <span class="config-hint">Encontrado na URL: docs.google.com/spreadsheets/d/<b>ID_AQUI</b>/edit</span>
-          </div>
-
-          <button class="config-btn save" onclick="saveConfig()">💾 Salvar Credenciais</button>
-
-          ${config.apiKey ? `
-            <button class="config-btn test" onclick="testConnection()">🔌 Testar Conexão</button>
-          ` : ''}
-
-          ${config.apiKey ? `
-            <button class="config-btn danger" onclick="clearConfig()">🗑️ Limpar Credenciais</button>
-          ` : ''}
+          ${status !== 'connected' ? `
+            <button class="config-btn save" onclick="signInGoogle()">🔐 Login Google (para editar)</button>
+          ` : `
+            <button class="config-btn danger" onclick="signOutGoogle()">🚪 Sair do Google</button>
+          `}
         </div>
 
         <div id="config-message" style="display: none;"></div>
 
-        <div class="section-title">📖 Como configurar</div>
+        <div class="section-title">📊 Informações</div>
+        <div class="chart-container">
+          <div style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.8;">
+            <p>📄 <strong>Planilha:</strong> Finanças Gabriel e Clara</p>
+            <p>🔑 <strong>API Key:</strong> ••••••••••E4b0 (restrita por domínio)</p>
+            <p>👤 <strong>OAuth:</strong> financas-app-client</p>
+            <p style="margin-top: 12px; color: var(--text-tertiary); font-size: 0.7rem;">
+              A leitura funciona automaticamente. Para editar a planilha pelo app, faça login com sua conta Google.
+            </p>
+          </div>
+        </div>
+
+        <div class="section-title" style="margin-top: 8px;">ℹ️ Sobre</div>
         <div class="chart-container">
           <div style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.6;">
-            <p><strong>1.</strong> Acesse <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color: var(--blue);">Google Cloud Console</a></p>
-            <p><strong>2.</strong> Crie uma <strong>Chave de API</strong> e restrinja para o domínio do seu GitHub Pages</p>
-            <p><strong>3.</strong> Habilite a <strong>Google Sheets API</strong> no projeto</p>
-            <p><strong>4.</strong> Cole as credenciais acima e clique em Salvar</p>
-            <p style="margin-top: 8px; color: var(--green);">🔒 Suas credenciais ficam apenas no localStorage deste navegador.</p>
+            <p>💰 <strong>Finanças App</strong> v1.0</p>
+            <p>Feito com ❤️ para Gabriel & Clara</p>
+            <p style="margin-top: 8px;">📱 Adicione à tela inicial do iPhone para usar como app nativo</p>
           </div>
         </div>
       </div>
@@ -564,21 +547,21 @@
     if (card) card.classList.toggle('open');
   };
 
-  window.saveConfig = function () {
-    const apiKey = document.getElementById('cfg-api-key').value.trim();
-    const clientId = document.getElementById('cfg-client-id').value.trim();
-    const spreadsheetId = document.getElementById('cfg-spreadsheet-id').value.trim();
-    SheetsService.saveConfig(clientId, apiKey, spreadsheetId);
-    showConfigMessage('✅ Credenciais salvas com sucesso!', 'var(--green)');
-    setTimeout(() => render(), 1000);
+  window.signInGoogle = async function () {
+    showConfigMessage('🔄 Inicializando...', 'var(--blue)');
+    const ok = await SheetsService.init();
+    if (ok) {
+      SheetsService.signIn();
+      setTimeout(() => render(), 2000);
+    } else {
+      showConfigMessage('❌ Falha ao inicializar API.', 'var(--red)');
+    }
   };
 
-  window.clearConfig = function () {
-    if (confirm('Tem certeza que deseja limpar todas as credenciais?')) {
-      SheetsService.clearConfig();
-      showConfigMessage('🗑️ Credenciais removidas.', 'var(--orange)');
-      setTimeout(() => render(), 1000);
-    }
+  window.signOutGoogle = function () {
+    SheetsService.signOut();
+    showConfigMessage('🚪 Desconectado.', 'var(--orange)');
+    setTimeout(() => render(), 1000);
   };
 
   window.testConnection = async function () {
@@ -587,12 +570,12 @@
     if (ok) {
       const data = await SheetsService.readSheet('Reservas e Investimentos!A1:D12');
       if (data) {
-        showConfigMessage('✅ Conexão OK! Dados lidos com sucesso.', 'var(--green)');
+        showConfigMessage('✅ Conexão OK! ' + data.length + ' linhas lidas da planilha.', 'var(--green)');
       } else {
-        showConfigMessage('⚠️ API inicializada mas não conseguiu ler dados. Verifique o Spreadsheet ID.', 'var(--orange)');
+        showConfigMessage('⚠️ API OK mas não leu dados. A planilha precisa ser pública ou você precisa fazer login.', 'var(--orange)');
       }
     } else {
-      showConfigMessage('❌ Falha na conexão. Verifique a API Key.', 'var(--red)');
+      showConfigMessage('❌ Falha na conexão. Verifique o console (F12) para detalhes.', 'var(--red)');
     }
   };
 
