@@ -3,6 +3,11 @@ extracted_html/
 *.pdf
 *.zip
 
+# Import scripts (development only)
+firebase-import.json
+firebase-import-fixed.json
+scripts/
+
 # OS
 .DS_Store
 Thumbs.db

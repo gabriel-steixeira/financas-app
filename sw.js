@@ -1,11 +1,12 @@
 // Service Worker for PWA offline support
-const CACHE_NAME = 'financas-v1';
+const CACHE_NAME = 'financas-v2';
 const ASSETS = [
     './',
     './index.html',
     './css/style.css',
+    './js/firebase-config.js',
+    './js/db.js',
     './js/data.js',
-    './js/sheets.js',
     './js/app.js',
     './manifest.json'
 ];
@@ -18,7 +19,7 @@ self.addEventListener('install', (event) => {
     self.skipWaiting();
 });
 
-// Activate
+// Activate - limpa caches antigos
 self.addEventListener('activate', (event) => {
     event.waitUntil(
         caches.keys().then((keys) =>
@@ -28,8 +29,20 @@ self.addEventListener('activate', (event) => {
     self.clients.claim();
 });
 
-// Fetch - Network first, fallback to cache
+// Fetch - Network first para Firebase, cache first para assets locais
 self.addEventListener('fetch', (event) => {
+    const url = new URL(event.request.url);
+
+    // Sempre buscar da rede: Firebase SDK, Firebase Realtime Database, e APIs externas
+    if (url.hostname.includes('gstatic.com') ||
+        url.hostname.includes('firebaseio.com') ||
+        url.hostname.includes('googleapis.com') ||
+        url.hostname.includes('firebase')) {
+        event.respondWith(fetch(event.request));
+        return;
+    }
+
+    // Para assets locais: network first, fallback to cache
     event.respondWith(
         fetch(event.request)
             .then((response) => {
