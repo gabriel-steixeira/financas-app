@@ -6,18 +6,37 @@
   'use strict';
 
   // State
-  let currentPerson = 'todos'; // Padrão: todos
+  let currentPerson = 'todos';
   let currentMonth = 'fevereiro';
   let currentPage = 'dashboard';
-  let cachedData = null; // { receitas, gastos, faturas, totalReceitas, totalGastos, saldo }
+  let cachedData = null;
   let cachedInvestimentos = null;
   let useFirebase = true;
   let loading = false;
+  let autoGenChecked = false;
 
-  const months = ['novembro', 'dezembro', 'janeiro', 'fevereiro'];
-  const monthKeys = { novembro: '2025-11', dezembro: '2025-12', janeiro: '2026-01', fevereiro: '2026-02' };
-  const monthLabels = { novembro: 'Nov', dezembro: 'Dez', janeiro: 'Jan', fevereiro: 'Fev' };
-  const monthFull = { novembro: 'Novembro 2025', dezembro: 'Dezembro 2025', janeiro: 'Janeiro 2026', fevereiro: 'Fevereiro 2026' };
+  // Meses dinâmicos - base fixa + expandível
+  let months = ['novembro', 'dezembro', 'janeiro', 'fevereiro'];
+  let monthKeys = { novembro: '2025-11', dezembro: '2025-12', janeiro: '2026-01', fevereiro: '2026-02' };
+  let monthLabels = { novembro: 'Nov', dezembro: 'Dez', janeiro: 'Jan', fevereiro: 'Fev' };
+  let monthFull = { novembro: 'Novembro 2025', dezembro: 'Dezembro 2025', janeiro: 'Janeiro 2026', fevereiro: 'Fevereiro 2026' };
+
+  const MONTH_NAMES = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+  const MONTH_ABBR = ['', 'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+
+  function addMonthToSystem(mesKey) {
+    const [ano, mes] = mesKey.split('-');
+    const mesNum = parseInt(mes);
+    const slug = MONTH_NAMES[mesNum].toLowerCase();
+    if (months.includes(slug) && monthKeys[slug] === mesKey) return;
+    // Se o slug já existe (ex: janeiro de outro ano), usar slug+ano
+    const finalSlug = months.includes(slug) ? `${slug}${ano}` : slug;
+    if (months.includes(finalSlug)) return;
+    months.push(finalSlug);
+    monthKeys[finalSlug] = mesKey;
+    monthLabels[finalSlug] = MONTH_ABBR[mesNum];
+    monthFull[finalSlug] = `${MONTH_NAMES[mesNum]} ${ano}`;
+  }
 
   const app = document.getElementById('app');
 
@@ -100,6 +119,29 @@
   // ====== INIT ======
   async function init() {
     bindEvents();
+
+    // Auto-gerar próximo mês se necessário
+    if (!autoGenChecked && useFirebase && typeof DB !== 'undefined') {
+      autoGenChecked = true;
+      try {
+        // Detectar mês atual real
+        const now = new Date();
+        const mesAtualReal = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+        // Verificar se o próximo mês já existe, senão criar
+        const proximoMesKey = await DB.verificarEAutoGerarMes(mesAtualReal);
+        if (proximoMesKey) {
+          addMonthToSystem(proximoMesKey);
+        }
+
+        // Selecionar o mês atual real como padrão
+        const slugAtual = Object.entries(monthKeys).find(([, v]) => v === mesAtualReal);
+        if (slugAtual) currentMonth = slugAtual[0];
+      } catch (e) {
+        console.warn('⚠️ Erro na auto-geração de mês:', e);
+      }
+    }
+
     await render();
   }
 
@@ -198,11 +240,13 @@
   function renderMonthSelector() {
     return `
       <div class="month-selector">
-        ${months.map(m => `
+        ${months.map(m => {
+      const anoSuffix = monthKeys[m] ? monthKeys[m].split('-')[0].slice(2) : '26';
+      return `
           <button class="month-btn ${currentMonth === m ? 'active' : ''}" data-month="${m}">
-            ${monthLabels[m]} ${m === 'novembro' || m === 'dezembro' ? '25' : '26'}
-          </button>
-        `).join('')}
+            ${monthLabels[m]} ${anoSuffix}
+          </button>`;
+    }).join('')}
       </div>
     `;
   }
@@ -298,7 +342,7 @@
         <div class="section-title">
           Todas as Receitas
           <span class="count">${d.receitas.length}</span>
-          <button class="add-btn" onclick="openAddModal('receita')">➕</button>
+          ${currentPerson !== 'todos' ? `<button class="add-btn" onclick="openAddModal('receita')">➕</button>` : ''}
         </div>
         <div class="transaction-list">
           ${d.receitas.map((r, i) => renderTransactionItem({ ...r, type: 'receita' }, i, true)).join('')}
@@ -358,7 +402,7 @@
         <div class="section-title">
           Todos os Gastos
           <span class="count">${d.gastos.length}</span>
-          <button class="add-btn" onclick="openAddModal('despesa')">➕</button>
+          ${currentPerson !== 'todos' ? `<button class="add-btn" onclick="openAddModal('despesa')">➕</button>` : ''}
         </div>
         <div class="transaction-list">
           ${d.gastos.map((g, i) => renderTransactionItem({ ...g, type: 'gasto' }, i, true)).join('')}
@@ -393,6 +437,7 @@
     if (currentPage !== 'faturas') return `<div class="page" id="page-faturas"></div>`;
     const faturas = cachedData.faturas || {};
     const keys = Object.keys(faturas);
+    const isIndividual = currentPerson !== 'todos';
 
     return `
       <div class="page active" id="page-faturas">
@@ -404,10 +449,16 @@
           </div>
         </div>
 
+        <div class="section-title">
+          Faturas do Mês
+          <span class="count">${keys.length}</span>
+          ${isIndividual ? `<button class="add-btn" onclick="openAddFaturaModal()">➕</button>` : ''}
+        </div>
+
         ${keys.length === 0 ? `
           <div class="empty-state">
             <div class="emoji">💳</div>
-            <p>Nenhum detalhe de fatura disponível para este mês${currentPerson === 'clara' ? '.<br>Clara organiza faturas no caderno.' : '.'}</p>
+            <p>Nenhuma fatura para este mês.</p>
           </div>
         ` : keys.map((key, i) => {
       const f = faturas[key];
@@ -418,18 +469,19 @@
                 <div class="left">
                   <div class="card-icon">💳</div>
                   <div>
-                    <div class="card-name">${f.nome || key}</div>
+                    <div class="card-name">${f.nome || key}${f.vencimento ? ' <small style="opacity:0.6">venc. dia ' + f.vencimento + '</small>' : ''}${currentPerson === 'todos' && f.pessoa ? ' <small style="opacity:0.5">(' + f.pessoa + ')</small>' : ''}</div>
                     <div class="card-total">${itens.length} itens</div>
                   </div>
                 </div>
                 <div style="text-align: right; display: flex; align-items: center; gap: 10px;">
                   <div class="total-value">${formatCurrency(f.total || 0)}</div>
+                  ${isIndividual ? '<button class="btn-action-inv" onclick="event.stopPropagation(); openEditFaturaModal(\'' + key + '\')" title="Editar fatura" style="font-size:0.8rem;">✏️</button>' : ''}
                   <span class="chevron">▼</span>
                 </div>
               </div>
               <div class="fatura-items">
                 ${itens.map(item => `
-                  <div class="fatura-item">
+                  <div class="fatura-item"${isIndividual && item.id ? ' onclick="openEditFaturaItemModal(\'' + key + '\', \'' + item.id + '\')" style="cursor:pointer;"' : ''}>
                     <div class="item-info">
                       <div class="item-name">${item.nome}</div>
                       <div class="item-parcela">${item.parcela || ''}${item.data ? ' • ' + item.data : ''}</div>
@@ -437,6 +489,7 @@
                     <div class="item-value">${formatCurrency(item.valor)}</div>
                   </div>
                 `).join('')}
+                ${isIndividual ? '<div class="fatura-item" style="justify-content:center; opacity:0.6; cursor:pointer;" onclick="openAddFaturaItemModal(\'' + key + '\')">➕ Adicionar item</div>' : ''}
               </div>
             </div>
           `;
@@ -514,19 +567,20 @@
   }
 
   // ====== TRANSACTION ITEM ======
-  function renderTransactionItem(t, i, showDelete = false) {
+  function renderTransactionItem(t, i, showActions = false) {
     const isReceita = t.type === 'receita';
     const icon = getCategoryIcon(t.categoria);
     const catClass = getCategoryClass(t.categoria);
     const colorBg = isReceita ? 'var(--green-dim)' : 'var(--red-dim)';
+    const canEdit = showActions && t.id && currentPerson !== 'todos';
 
     return `
-      <div class="transaction-item" style="animation-delay: ${i * 40}ms">
+      <div class="transaction-item" style="animation-delay: ${i * 40}ms"${canEdit ? ` onclick="openEditModal('${t.id}')"` : ''}>
         <div class="cat-icon" style="background: ${colorBg}">
           ${icon}
         </div>
         <div class="info">
-          <div class="name">${t.descricao || t.categoria}</div>
+          <div class="name">${t.descricao || t.categoria}${currentPerson === 'todos' && t.pessoa ? ' <small style="opacity:0.5">(' + t.pessoa + ')</small>' : ''}</div>
           <div class="desc">
             <span class="cat-badge ${catClass}">${t.categoria}</span>
             ${t.status ? `<span class="status-badge pago" style="margin-left: 4px">${t.status}</span>` : ''}
@@ -535,7 +589,7 @@
         <div class="amount ${isReceita ? 'positive' : 'negative'}">
           ${isReceita ? '+' : '-'}${formatCurrency(Math.abs(t.valor))}
           ${t.data ? `<span class="date">${t.data}</span>` : ''}
-          ${showDelete && t.id ? `<button class="delete-item-btn" onclick="event.stopPropagation(); deleteItem('${t.id}')">🗑️</button>` : ''}
+          ${canEdit ? `<button class="delete-item-btn" onclick="event.stopPropagation(); deleteItem('${t.id}')" title="Excluir">🗑️</button>` : ''}
         </div>
       </div>
     `;
@@ -575,10 +629,42 @@
           </div>
         </div>
 
+        <div class="section-title" style="margin-top: 8px;">📅 Gerenciar Meses</div>
+        <div style="display: flex; flex-direction: column; gap: 14px; margin-bottom: 24px;">
+          <div class="chart-container">
+            <div style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.8;">
+              <p>O app gera automaticamente o próximo mês ao iniciar.</p>
+              <p>Se os dados gerados estiverem incorretos, use o botão abaixo para <strong>apagar e re-gerar</strong> o próximo mês.</p>
+            </div>
+          </div>
+          <button class="config-btn test" onclick="reGenerateNextMonth()" style="background: var(--orange); color: #fff;">
+            🔄 Re-gerar Próximo Mês (${MONTH_NAMES[new Date().getMonth() + 2] || MONTH_NAMES[1]})
+          </button>
+          <div id="config-message" style="display: none;"></div>
+
+          <div style="margin-top: 24px; border-top: 1px solid var(--border);">
+            <div class="section-title">🔧 Reparos de Dados - Importar Clara</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+              <button class="config-btn test" onclick="importarInvestimentosClaraNov()" style="flex: 1; min-width: 120px; background: var(--card-bg); border: 1px solid var(--border); color: var(--text-secondary); font-size: 0.8rem;">
+                📥 Nov/25
+              </button>
+              <button class="config-btn test" onclick="importarInvestimentosClaraDez()" style="flex: 1; min-width: 120px; background: var(--card-bg); border: 1px solid var(--border); color: var(--text-secondary); font-size: 0.8rem;">
+                📥 Dez/25
+              </button>
+              <button class="config-btn test" onclick="importarInvestimentosClaraJan()" style="flex: 1; min-width: 120px; background: var(--card-bg); border: 1px solid var(--border); color: var(--text-secondary); font-size: 0.8rem;">
+                📥 Jan/26
+              </button>
+              <button class="config-btn test" onclick="importarInvestimentosClaraFev()" style="flex: 1; min-width: 120px; background: var(--card-bg); border: 1px solid var(--border); color: var(--text-secondary); font-size: 0.8rem;">
+                📥 Fev/26
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div class="section-title" style="margin-top: 8px;">ℹ️ Sobre</div>
         <div class="chart-container">
           <div style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.6;">
-            <p>💰 <strong>Finanças App</strong> v2.0 🔥</p>
+            <p>💰 <strong>Finanças App</strong> v3.0 🔥</p>
             <p>Feito com ❤️ para Gabriel & Clara</p>
             <p style="margin-top: 8px;">📱 Adicione à tela inicial do iPhone para usar como app nativo</p>
           </div>
@@ -608,6 +694,20 @@
         `).join('')}
       </nav>
     `;
+  }
+
+  // ====== UTILS UI ======
+  function showConfigMessage(msg, color) {
+    const el = document.getElementById('config-message');
+    if (el) {
+      el.style.display = 'block';
+      el.style.padding = '12px';
+      el.style.borderRadius = '8px';
+      el.style.background = 'var(--card-bg)';
+      el.style.color = color || 'var(--text-primary)';
+      el.style.fontSize = '0.85rem';
+      el.innerHTML = msg;
+    }
   }
 
   // ====== MODAL CRUD ======
@@ -675,7 +775,7 @@
     const dataFormatted = `${dateParts[2]}/${dateParts[1]}/${dateParts[0]}`;
 
     const dados = {
-      pessoa: currentPerson,
+      pessoa: currentPerson === 'todos' ? 'gabriel' : currentPerson,
       mes: monthKeys[currentMonth],
       tipo,
       data: dataFormatted,
@@ -691,6 +791,150 @@
     } else {
       alert('Erro ao salvar. Verifique o console.');
     }
+  };
+
+  // ====== EDITAR TRANSAÇÃO ======
+  window.openEditModal = function (id) {
+    const all = [...(cachedData.receitas || []), ...(cachedData.gastos || [])];
+    const t = all.find(x => x.id === id);
+    if (!t) return;
+    const tipo = t.tipo || 'despesa';
+    const categorias = tipo === 'receita'
+      ? ['Salário', 'Pix', 'Extra', 'Benefício', 'Retirada Investimento', 'Sobra do Mês passado']
+      : ['Boleto', 'Fatura cartão', 'Investimento', 'Presente', 'Transporte', 'Alimentação', 'Coleta'];
+    let dateVal = '';
+    if (t.data) { const p = t.data.split('/'); if (p.length === 3) dateVal = p[2] + '-' + p[1] + '-' + p[0]; }
+
+    showModal(
+      '<div class="modal-header"><h3>✏️ Editar ' + (tipo === 'receita' ? 'Receita' : 'Gasto') + '</h3><button class="modal-close" onclick="closeModal()">✕</button></div>' +
+      '<form id="edit-form" onsubmit="submitEdit(event, \'' + id + '\', \'' + tipo + '\')">' +
+      '<div class="form-group"><label>Data</label><input type="date" id="f-data" value="' + dateVal + '"></div>' +
+      '<div class="form-group"><label>Categoria</label><select id="f-categoria">' + categorias.map(function (c) { return '<option value="' + c + '"' + (c === t.categoria ? ' selected' : '') + '>' + c + '</option>'; }).join('') + '</select></div>' +
+      '<div class="form-group"><label>Descrição</label><input type="text" id="f-descricao" value="' + (t.descricao || '').replace(/"/g, '&quot;') + '" required></div>' +
+      '<div class="form-group"><label>Valor (R$)</label><input type="number" id="f-valor" step="0.01" value="' + t.valor + '" required></div>' +
+      '<button type="submit" class="config-btn save" style="width:100%; margin-top: 12px;">💾 Salvar Alterações</button></form>'
+    );
+  };
+
+  window.submitEdit = async function (e, id, tipo) {
+    e.preventDefault();
+    const dataInput = document.getElementById('f-data').value;
+    let dataFormatted = '';
+    if (dataInput) { const dp = dataInput.split('-'); dataFormatted = dp[2] + '/' + dp[1] + '/' + dp[0]; }
+    const dados = {
+      tipo: tipo,
+      data: dataFormatted,
+      categoria: document.getElementById('f-categoria').value,
+      descricao: document.getElementById('f-descricao').value,
+      valor: parseFloat(document.getElementById('f-valor').value)
+    };
+    const ok = await DB.updateTransacao(id, dados);
+    if (ok) { closeModal(); await render(); } else { alert('Erro ao atualizar.'); }
+  };
+
+  // ====== CRUD FATURAS UI ======
+  window.openAddFaturaModal = function () {
+    showModal(
+      '<div class="modal-header"><h3>💳 Nova Fatura</h3><button class="modal-close" onclick="closeModal()">✕</button></div>' +
+      '<form onsubmit="submitAddFatura(event)">' +
+      '<div class="form-group"><label>Nome do Cartão</label><input type="text" id="fat-cartao" placeholder="Ex: NUBANK, XP..." required></div>' +
+      '<div class="form-group"><label>Dia do Vencimento</label><input type="number" id="fat-vencimento" min="1" max="31" placeholder="Ex: 15"></div>' +
+      '<button type="submit" class="config-btn save" style="width:100%; margin-top: 12px;">✅ Criar Fatura</button></form>'
+    );
+  };
+
+  window.submitAddFatura = async function (e) {
+    e.preventDefault();
+    const key = await DB.addFatura({
+      pessoa: currentPerson === 'todos' ? 'gabriel' : currentPerson,
+      mes: monthKeys[currentMonth],
+      cartao: document.getElementById('fat-cartao').value.toUpperCase(),
+      vencimento: document.getElementById('fat-vencimento').value || ''
+    });
+    if (key) { closeModal(); await render(); }
+  };
+
+  window.openEditFaturaModal = function (faturaId) {
+    const f = cachedData.faturas[faturaId];
+    if (!f) return;
+    showModal(
+      '<div class="modal-header"><h3>✏️ Editar Fatura</h3><button class="modal-close" onclick="closeModal()">✕</button></div>' +
+      '<form onsubmit="submitEditFatura(event, \'' + faturaId + '\')">' +
+      '<div class="form-group"><label>Nome do Cartão</label><input type="text" id="fat-cartao" value="' + (f.cartao || f.nome) + '" required></div>' +
+      '<div class="form-group"><label>Dia do Vencimento</label><input type="number" id="fat-vencimento" min="1" max="31" value="' + (f.vencimento || '') + '"></div>' +
+      '<button type="submit" class="config-btn save" style="width:100%; margin-top: 12px;">💾 Salvar</button>' +
+      '<button type="button" class="config-btn test" style="width:100%; margin-top: 8px; background: var(--red-dim); color: var(--red);" onclick="deleteFaturaUI(\'' + faturaId + '\')">🗑️ Excluir Fatura</button></form>'
+    );
+  };
+
+  window.submitEditFatura = async function (e, faturaId) {
+    e.preventDefault();
+    await DB.updateFatura(faturaId, {
+      cartao: document.getElementById('fat-cartao').value.toUpperCase(),
+      vencimento: document.getElementById('fat-vencimento').value || ''
+    });
+    closeModal(); await render();
+  };
+
+  window.deleteFaturaUI = async function (faturaId) {
+    if (!confirm('Excluir esta fatura e todos os itens?')) return;
+    await DB.deleteFatura(faturaId);
+    closeModal(); await render();
+  };
+
+  window.openAddFaturaItemModal = function (faturaId) {
+    showModal(
+      '<div class="modal-header"><h3>➕ Novo Item</h3><button class="modal-close" onclick="closeModal()">✕</button></div>' +
+      '<form onsubmit="submitAddFaturaItem(event, \'' + faturaId + '\')">' +
+      '<div class="form-group"><label>Nome</label><input type="text" id="fi-nome" required></div>' +
+      '<div class="form-group"><label>Valor (R$)</label><input type="number" id="fi-valor" step="0.01" required></div>' +
+      '<div class="form-group"><label>Data</label><input type="text" id="fi-data" placeholder="DD/MM/AAAA"></div>' +
+      '<div class="form-group"><label>Parcela</label><input type="text" id="fi-parcela" placeholder="Ex: 1 de 10"></div>' +
+      '<button type="submit" class="config-btn save" style="width:100%; margin-top: 12px;">✅ Adicionar</button></form>'
+    );
+  };
+
+  window.submitAddFaturaItem = async function (e, faturaId) {
+    e.preventDefault();
+    await DB.addFaturaItem(faturaId, {
+      nome: document.getElementById('fi-nome').value,
+      valor: parseFloat(document.getElementById('fi-valor').value),
+      data: document.getElementById('fi-data').value || '',
+      parcela: document.getElementById('fi-parcela').value || ''
+    });
+    closeModal(); await render();
+  };
+
+  window.openEditFaturaItemModal = function (faturaId, itemId) {
+    const f = cachedData.faturas[faturaId]; if (!f) return;
+    const item = f.itens.find(function (i) { return i.id === itemId; }); if (!item) return;
+    showModal(
+      '<div class="modal-header"><h3>✏️ Editar Item</h3><button class="modal-close" onclick="closeModal()">✕</button></div>' +
+      '<form onsubmit="submitEditFaturaItem(event, \'' + faturaId + '\', \'' + itemId + '\')">' +
+      '<div class="form-group"><label>Nome</label><input type="text" id="fi-nome" value="' + item.nome.replace(/"/g, '&quot;') + '" required></div>' +
+      '<div class="form-group"><label>Valor (R$)</label><input type="number" id="fi-valor" step="0.01" value="' + item.valor + '" required></div>' +
+      '<div class="form-group"><label>Data</label><input type="text" id="fi-data" value="' + (item.data || '') + '" placeholder="DD/MM/AAAA"></div>' +
+      '<div class="form-group"><label>Parcela</label><input type="text" id="fi-parcela" value="' + (item.parcela || '') + '" placeholder="Ex: 1 de 10"></div>' +
+      '<button type="submit" class="config-btn save" style="width:100%; margin-top: 12px;">💾 Salvar</button>' +
+      '<button type="button" class="config-btn test" style="width:100%; margin-top: 8px; background: var(--red-dim); color: var(--red);" onclick="deleteFaturaItemUI(\'' + faturaId + '\', \'' + itemId + '\')">🗑️ Excluir</button></form>'
+    );
+  };
+
+  window.submitEditFaturaItem = async function (e, faturaId, itemId) {
+    e.preventDefault();
+    await DB.updateFaturaItem(faturaId, itemId, {
+      nome: document.getElementById('fi-nome').value,
+      valor: parseFloat(document.getElementById('fi-valor').value),
+      data: document.getElementById('fi-data').value || '',
+      parcela: document.getElementById('fi-parcela').value || ''
+    });
+    closeModal(); await render();
+  };
+
+  window.deleteFaturaItemUI = async function (faturaId, itemId) {
+    if (!confirm('Remover este item?')) return;
+    await DB.deleteFaturaItem(faturaId, itemId);
+    closeModal(); await render();
   };
 
   // ====== CRUD INVESTIMENTOS UI ======
@@ -764,8 +1008,8 @@
   window.submitInvestimento = async function (e, id = null) {
     e.preventDefault();
     const dados = {
-      pessoa: currentPerson,
-      mes: monthKeys[currentMonth], // Usa mês selecionado
+      pessoa: currentPerson === 'todos' ? 'gabriel' : currentPerson,
+      mes: monthKeys[currentMonth],
       nome: document.getElementById('inv-nome').value,
       valor: parseFloat(document.getElementById('inv-valor').value),
       moeda: document.getElementById('inv-moeda').value
@@ -791,6 +1035,99 @@
     const ok = await DB.deleteTransacao(id);
     if (ok) await render();
   };
+
+  // ====== RE-GERAR MÊS ======
+  window.reGenerateNextMonth = async function () {
+    // SEMPRE usar o mês REAL atual como base (não o mês selecionado na aba)
+    const now = new Date();
+    const mesAtualKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const proximoMesKey = DB._getProximoMes(mesAtualKey);
+
+    if (!confirm('Isso vai APAGAR todos os dados de ' + DB._getMesLabel(proximoMesKey) + ' e re-gerar a partir de ' + DB._getMesLabel(mesAtualKey) + '. Continuar?')) return;
+
+    showConfigMessage('🔄 Re-gerando ' + DB._getMesLabel(proximoMesKey) + '...', 'var(--orange)');
+
+    try {
+      // Limpar mês de Abril se foi gerado por engano
+      const mesAdiante = DB._getProximoMes(proximoMesKey);
+      const snapExtra = await firebase.database().ref('transacoes').orderByChild('mes').equalTo(mesAdiante).limitToFirst(1).once('value');
+      if (snapExtra.exists()) {
+        console.log('🗑️ Limpando mês extra gerado por engano:', mesAdiante);
+        const del = {};
+        const s1 = await firebase.database().ref('transacoes').orderByChild('mes').equalTo(mesAdiante).once('value');
+        Object.keys(s1.val() || {}).forEach(function (id) { del['transacoes/' + id] = null; });
+        const s2 = await firebase.database().ref('faturas').orderByChild('mes').equalTo(mesAdiante).once('value');
+        Object.keys(s2.val() || {}).forEach(function (id) { del['faturas/' + id] = null; });
+        const s3 = await firebase.database().ref('investimentos').orderByChild('mes').equalTo(mesAdiante).once('value');
+        Object.keys(s3.val() || {}).forEach(function (id) { del['investimentos/' + id] = null; });
+        if (Object.keys(del).length > 0) await firebase.database().ref().update(del);
+        // Remover da lista de meses na UI
+        const slugExtra = Object.entries(monthKeys).find(function (e) { return e[1] === mesAdiante; });
+        if (slugExtra) {
+          const idx = months.indexOf(slugExtra[0]);
+          if (idx > -1) months.splice(idx, 1);
+          delete monthKeys[slugExtra[0]];
+          delete monthLabels[slugExtra[0]];
+          delete monthFull[slugExtra[0]];
+        }
+        console.log('✅ Mês extra', mesAdiante, 'removido');
+      }
+
+      await DB.reGerarMes(mesAtualKey, proximoMesKey, ['gabriel', 'clara']);
+      addMonthToSystem(proximoMesKey);
+      currentMonth = Object.entries(monthKeys).find(([, v]) => v === mesAtualKey)?.[0] || currentMonth;
+      showConfigMessage('✅ ' + DB._getMesLabel(proximoMesKey) + ' re-gerado com sucesso!', 'var(--green)');
+      await render();
+    } catch (e) {
+      showConfigMessage('❌ Erro: ' + e.message, 'var(--red)');
+      console.error(e);
+    }
+  };
+
+  // ====== IMPORTAR INVESTIMENTOS CLARA (DEZ/JAN/FEV) ======
+  async function importarInvestimentosClara(mesKey, dados) {
+    if (!confirm(`Importar investimentos de Clara para ${DB._getMesLabel(mesKey)}?`)) return;
+
+    showConfigMessage('🔄 Importando...', 'var(--orange)');
+
+    try {
+      // Verificar se já existem
+      const check = await DB.getInvestimentos('clara', mesKey);
+      if (Object.keys(check).length > 0) {
+        showConfigMessage(`⚠️ Já existem investimentos para Clara em ${mesKey}.`, 'var(--text-secondary)');
+        return;
+      }
+
+      for (const item of dados) {
+        await DB.addInvestimento({ pessoa: 'clara', mes: mesKey, ...item });
+      }
+
+      showConfigMessage(`✅ Investimentos de Clara (${mesKey}) importados!`, 'var(--green)');
+      await render();
+    } catch (e) {
+      showConfigMessage('❌ Erro: ' + e.message, 'var(--red)');
+    }
+  }
+
+  window.importarInvestimentosClaraNov = () => importarInvestimentosClara('2025-11', [
+    { nome: 'Casamento', valor: 1464 },
+    { nome: 'Reserva', valor: 2435 }
+  ]);
+
+  window.importarInvestimentosClaraDez = () => importarInvestimentosClara('2025-12', [
+    { nome: 'Casamento', valor: 1484 },
+    { nome: 'Reserva', valor: 1935 }
+  ]);
+
+  window.importarInvestimentosClaraJan = () => importarInvestimentosClara('2026-01', [
+    { nome: 'Casamento', valor: 1504.14 },
+    { nome: 'Reserva', valor: 1388 }
+  ]);
+
+  window.importarInvestimentosClaraFev = () => importarInvestimentosClara('2026-02', [
+    { nome: 'Casamento', valor: 1525 },
+    { nome: 'Reserva', valor: 1738 }
+  ]);
 
   // ====== EVENTS ======
   function bindEvents() {
