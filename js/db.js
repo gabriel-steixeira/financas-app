@@ -47,6 +47,12 @@ const DB = {
             const ref = database.ref('transacoes').push();
             await ref.set(dados);
             console.log('✅ Transação adicionada:', ref.key);
+
+            // Se for recorrente, propagar para meses futuros
+            if (dados.parcela) {
+                await this._propagarParaFuturo(ref.key, dados);
+            }
+
             return ref.key;
         } catch (error) {
             console.error('❌ Erro ao adicionar transação:', error);
@@ -54,9 +60,151 @@ const DB = {
         }
     },
 
-    async updateTransacao(id, dados) {
+    async _propagarParaFuturo(idOriginal, dados) {
+        let mesAlvo = dados.mes; // 'YYYY-MM'
+        let parcelaAtual = dados.parcela;
+        const totalParcelas = dados.parcela.match(/(\d+)\s*de\s*(\d+)/i);
+        const recorrenteId = dados.recorrenteId || idOriginal;
+
+        const updates = {};
+
+        // Propagar apenas para o PRÓXIMO mês (reduzido de 3 para 1 para evitar poluição)
+        for (let i = 0; i < 1; i++) {
+            const proximoMesKey = this._getProximoMes(mesAlvo);
+
+            // Lógica de próxima parcela
+            let novaParcela = parcelaAtual;
+            if (totalParcelas) {
+                const atual = parseInt(parcelaAtual.match(/(\d+)/)[1]);
+                const total = parseInt(totalParcelas[2]);
+                if (atual >= total) break; // Acabaram as parcelas
+                novaParcela = `${atual + 1} de ${total}`;
+            }
+
+            // Verificar data limite
+            if (dados.dataFinal) {
+                const [fimMes, fimAno] = dados.dataFinal.split('/').map(Number);
+                const [proxAno, proxMes] = proximoMesKey.split('-').map(Number);
+                if (proxAno > fimAno || (proxAno === fimAno && proxMes > fimMes)) break;
+            }
+
+            // Verificar se já existe (para não duplicar se o usuário já abriu o mês)
+            const snap = await database.ref('transacoes').orderByChild('mes').equalTo(proximoMesKey).once('value');
+            const data = snap.val() || {};
+            const itemExistente = Object.entries(data).find(([tid, t]) => t.recorrenteId === recorrenteId);
+            const jaExiste = !!itemExistente;
+
+            if (jaExiste) {
+                // Se já existe mas está sem pessoa (bug anterior), corrigir
+                const [tid, t] = itemExistente;
+                if (!t.pessoa) {
+                    updates[`transacoes/${tid}/pessoa`] = dados.pessoa;
+                    console.log(`🔧 Corrigindo dono ${dados.pessoa} em item existente ${tid} (${proximoMesKey})`);
+                }
+            } else {
+                // Tenta encontrar um órfão (mesma pessoa, desc e cat mas sem ID)
+                const orfao = Object.entries(data).find(([tid, t]) =>
+                    t.pessoa === dados.pessoa &&
+                    t.descricao === dados.descricao &&
+                    t.categoria === dados.categoria &&
+                    !t.recorrenteId
+                );
+
+                if (orfao) {
+                    const orfaoId = orfao[0];
+                    updates[`transacoes/${orfaoId}/recorrenteId`] = recorrenteId;
+                    updates[`transacoes/${orfaoId}/parcela`] = novaParcela;
+                    updates[`transacoes/${orfaoId}/pessoa`] = dados.pessoa;
+                    updates[`transacoes/${orfaoId}/dataInicio`] = dados.dataInicio || dados.data;
+                    console.log(`🔗 Vinculando item órfão ${orfaoId} em ${proximoMesKey} com dono ${dados.pessoa}`);
+                } else {
+                    const newKey = database.ref('transacoes').push().key;
+                    updates[`transacoes/${newKey}`] = {
+                        ...dados,
+                        mes: proximoMesKey,
+                        parcela: novaParcela,
+                        recorrenteId: recorrenteId,
+                        data: dados.data ? this._formatDateForMonth(dados.data, proximoMesKey) : ''
+                    };
+                    console.log(`✨ Criando parcela ${novaParcela} em ${proximoMesKey}`);
+                }
+
+                // Aproveita para registrar o mês caso não exista
+                await this.registrarMes(proximoMesKey, this._getMesLabel(proximoMesKey));
+            }
+
+            mesAlvo = proximoMesKey;
+            parcelaAtual = novaParcela;
+        }
+
+        if (Object.keys(updates).length > 0) {
+            await database.ref().update(updates);
+            console.log(`📦 Lote de propagação enviado (${Object.keys(updates).length} ops)`);
+        }
+        console.log(`✅ Propagação de ${recorrenteId} concluída.`);
+    },
+
+    async updateTransacao(id, dados, propagar = false) {
         try {
+            // 1. Obter dados atuais para saber se estamos vinculando algo novo
+            const snapshotAtual = await database.ref(`transacoes/${id}`).once('value');
+            const transOld = snapshotAtual.val();
+
+            // 2. Atualizar a transação atual
             await database.ref(`transacoes/${id}`).update(dados);
+
+            if (dados.parcela) {
+                const recId = dados.recorrenteId || transOld.recorrenteId || database.ref().push().key;
+                const updates = {};
+
+                // Se não tinha ID antes ou se queremos propagar, precisamos vasculhar
+                // Estratégia: buscar por ID de recorrência OU pelo padrão antigo (pessoa+desc+cat) para vincular
+                const snapshotAll = await database.ref('transacoes').once('value');
+                const allData = snapshotAll.val() || {};
+
+                const oldKey = transOld.recorrenteId ? null : `${transOld.pessoa}_${transOld.descricao}_${transOld.categoria}`;
+
+                Object.entries(allData).forEach(([tid, t]) => {
+                    if (tid === id) return;
+                    if (!t.parcela) return;
+
+                    let deveVincular = false;
+                    // Se já tem o mesmo ID de recorrência
+                    if (t.recorrenteId && t.recorrenteId === recId) deveVincular = true;
+                    // Se não tem ID mas bate com o padrão que o item atual tinha (vinculando histórico)
+                    else if (!t.recorrenteId && oldKey && `${t.pessoa}_${t.descricao}_${t.categoria}` === oldKey) deveVincular = true;
+
+                    if (deveVincular) {
+                        // Sempre vincular o ID
+                        updates[`transacoes/${tid}/recorrenteId`] = recId;
+
+                        // Se for propagação e for mês futuro, atualizar campos core
+                        if (propagar && t.mes > transOld.mes) {
+                            updates[`transacoes/${tid}/descricao`] = dados.descricao;
+                            updates[`transacoes/${tid}/categoria`] = dados.categoria;
+                            updates[`transacoes/${tid}/valor`] = dados.valor;
+                            updates[`transacoes/${tid}/dataFinal`] = dados.dataFinal || null;
+                        }
+                    }
+                });
+
+                // Se o item editado não tinha ID, atualizar ele mesmo com o novo ID gerado
+                if (!dados.recorrenteId && !transOld.recorrenteId) {
+                    updates[`transacoes/${id}/recorrenteId`] = recId;
+                    updates[`transacoes/${id}/dataInicio`] = transOld.dataInicio || transOld.data;
+                }
+
+                if (Object.keys(updates).length > 0) {
+                    await database.ref().update(updates);
+                    console.log(`🔗 Vínculo/Propagação concluída em ${Object.keys(updates).length} itens.`);
+                }
+
+                // Se solicitou propagação, garantir que os meses futuros tenham o item (preencher lacunas)
+                if (propagar) {
+                    await this._propagarParaFuturo(id, { ...dados, recorrenteId: recId });
+                }
+            }
+
             console.log('✅ Transação atualizada:', id);
             return true;
         } catch (error) {
@@ -100,6 +248,9 @@ const DB = {
                     cartao: f.cartao,
                     total: f.totalFatura,
                     vencimento: f.vencimento || '',
+                    beneficio: f.beneficio || null,
+                    pago: f.pago || false,
+                    mes: f.mes || mes,
                     itens
                 };
             });
@@ -121,6 +272,7 @@ const DB = {
                 cartao: dados.cartao,
                 totalFatura: 0,
                 vencimento: dados.vencimento || '',
+                pago: false,
                 itens: {}
             });
             console.log('✅ Fatura criada:', ref.key);
@@ -137,6 +289,8 @@ const DB = {
             const updates = {};
             if (dados.cartao !== undefined) updates.cartao = dados.cartao;
             if (dados.vencimento !== undefined) updates.vencimento = dados.vencimento;
+            if (dados.beneficio !== undefined) updates.beneficio = dados.beneficio;
+            if (dados.pago !== undefined) updates.pago = dados.pago;
             await database.ref(`faturas/${faturaId}`).update(updates);
             console.log('✅ Fatura atualizada:', faturaId);
             return true;
@@ -478,11 +632,12 @@ const DB = {
                         if (totalFatura > 0) {
                             const despKey = database.ref('transacoes').push().key;
                             const vencimento = fatura.vencimento || '';
+                            const dataDespesa = vencimento ? this._formatDateForMonth(vencimento, proximoMesKey) : this._getFirstDayOfMonth(proximoMesKey);
                             updates[`transacoes/${despKey}`] = {
                                 pessoa,
                                 mes: proximoMesKey,
                                 tipo: 'despesa',
-                                data: vencimento ? this._formatDateForMonth(vencimento, proximoMesKey) : '',
+                                data: dataDespesa,
                                 categoria: 'Fatura cartão',
                                 descricao: `Fatura do cartão ${fatura.cartao}`,
                                 valor: totalFatura
@@ -494,7 +649,74 @@ const DB = {
                 console.error(`  ❌ Erro ao processar faturas de ${pessoa}:`, e);
             }
 
-            // 3. Copiar investimentos do mês anterior
+            // 3. Copiar transações recorrentes (Gastos e Receitas) do mês anterior
+            try {
+                const transacoesAtuais = await this.getTransacoes(pessoa, mesAtualKey);
+                const todas = [...transacoesAtuais.receitas, ...transacoesAtuais.gastos];
+                console.log(`  📝 ${todas.length} transações totais em ${mesAtualKey}`);
+
+                for (const t of todas) {
+                    if (!t.parcela) continue;
+
+                    const parcelaLower = t.parcela.toLowerCase().trim();
+                    let novaParcela = '';
+                    let deveCopiar = false;
+
+                    // Ignorar sobra do mês passado (já gerada acima)
+                    if (t.categoria === 'Sobra do Mês passado') continue;
+
+                    // Transações recorrentes mensais
+                    if (parcelaLower === 'mensal') {
+                        deveCopiar = true;
+                        novaParcela = 'Mensal';
+                    } else {
+                        // Transações parceladas "X de Y"
+                        const match = t.parcela.match(/(\d+)\s*de\s*(\d+)/i);
+                        if (match) {
+                            const atual = parseInt(match[1]);
+                            const total = parseInt(match[2]);
+                            if (atual < total) {
+                                deveCopiar = true;
+                                novaParcela = `${atual + 1} de ${total}`;
+                            }
+                        }
+                    }
+
+                    // Verificar se existe data limite (mês/ano)
+                    if (deveCopiar && t.dataFinal) {
+                        const [fimMes, fimAno] = t.dataFinal.split('/').map(Number);
+                        const [proxAno, proxMes] = proximoMesKey.split('-').map(Number);
+                        if (proxAno > fimAno || (proxAno === fimAno && proxMes > fimMes)) {
+                            deveCopiar = false;
+                        }
+                    }
+
+                    if (deveCopiar) {
+                        const transKey = database.ref('transacoes').push().key;
+                        const recId = t.recorrenteId || t.id || transKey; // Usar ID existente ou o novo
+                        const dataInicio = t.dataInicio || t.data || this._getFirstDayOfMonth(mesAtualKey);
+                        const dataTransacao = t.data ? this._formatDateForMonth(t.data, proximoMesKey) : this._getFirstDayOfMonth(proximoMesKey);
+
+                        updates[`transacoes/${transKey}`] = {
+                            pessoa,
+                            mes: proximoMesKey,
+                            tipo: t.tipo,
+                            data: dataTransacao,
+                            categoria: t.categoria,
+                            descricao: t.descricao,
+                            valor: t.valor,
+                            parcela: novaParcela,
+                            dataFinal: t.dataFinal || null,
+                            recorrenteId: recId,
+                            dataInicio: dataInicio
+                        };
+                    }
+                }
+            } catch (e) {
+                console.error(`  ❌ Erro ao processar transações recorrentes de ${pessoa}:`, e);
+            }
+
+            // 4. Copiar investimentos do mês anterior
             try {
                 const investimentos = await this.getInvestimentos(pessoa, mesAtualKey);
                 const invEntries = Object.values(investimentos);
@@ -517,9 +739,10 @@ const DB = {
 
         // Copiar cotação do dólar
         try {
-            const cotacao = await this.getCotacaoDolar(mesAtualKey);
+            const cotacaoSnapshot = await database.ref(`meta/cotacaoDolar/${mesAtualKey}`).once('value');
+            const cotacao = cotacaoSnapshot.val();
             if (cotacao) {
-                updates[`cotacaoDolar/${proximoMesKey}`] = cotacao;
+                updates[`meta/cotacaoDolar/${proximoMesKey}`] = cotacao;
             }
         } catch (e) {
             console.warn('⚠️ Erro ao copiar cotação:', e);
@@ -547,17 +770,15 @@ const DB = {
         const proximoMesKey = this._getProximoMes(mesAtualKey);
         if (!proximoMesKey) return null;
 
-        const snapshot = await database.ref('transacoes')
-            .orderByChild('mes')
-            .equalTo(proximoMesKey)
-            .limitToFirst(1)
-            .once('value');
+        // Verificar se o mês já foi oficialmente registrado (gerado/iniciado)
+        const snapshot = await database.ref(`meta/meses/${proximoMesKey}`).once('value');
 
         if (snapshot.exists()) {
-            console.log(`ℹ️ Mês ${proximoMesKey} já existe.`);
+            console.log(`ℹ️ Mês ${proximoMesKey} já está registrado.`);
             return proximoMesKey;
         }
 
+        // Se não está registrado, tenta gerar do zero
         await this.autoGerarProximoMes(mesAtualKey, proximoMesKey, ['gabriel', 'clara']);
         return proximoMesKey;
     },
@@ -631,6 +852,125 @@ const DB = {
         };
         const [ano, mes] = mesKey.split('-');
         return `${meses[mes]} ${ano}`;
+    },
+
+    async getHistoricoRecorrentes(pessoa) {
+        try {
+            let snapshot;
+            if (pessoa === 'todos') {
+                snapshot = await database.ref('transacoes').once('value');
+            } else {
+                snapshot = await database.ref('transacoes').orderByChild('pessoa').equalTo(pessoa).once('value');
+            }
+            const data = snapshot.val() || {};
+            const compromissos = {};
+
+            Object.entries(data).forEach(([id, t]) => {
+                if (!t.parcela) return;
+
+                // Chave única para o compromisso (ID de recorrência ou combinação de campos)
+                const recKey = t.recorrenteId || `${t.pessoa}_${t.descricao}_${t.categoria}`;
+
+                if (!compromissos[recKey]) {
+                    compromissos[recKey] = {
+                        id: recKey,
+                        descricao: t.descricao,
+                        categoria: t.categoria,
+                        pessoa: t.pessoa,
+                        tipo: t.tipo,
+                        valorTotalPago: 0,
+                        mesesPagos: 0,
+                        dataFinal: t.dataFinal || null,
+                        parcelaMaisRecente: t.parcela,
+                        contagemParcelas: 0,
+                        historico: []
+                    };
+                }
+
+                compromissos[recKey].historico.push({ ...t, id });
+
+                // Só considerar no resumo financeiro se o mês já passou ou é o mês atual (hoje)
+                const now = new Date();
+                const mesAtualProg = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+                if (t.mes <= mesAtualProg) {
+                    compromissos[recKey].valorTotalPago += (t.valor || 0);
+                    compromissos[recKey].mesesPagos += 1;
+                }
+
+                // Detectar se é parcelado
+                const match = t.parcela.match(/(\d+)\s*de\s*(\d+)/i);
+                if (match) {
+                    const atual = parseInt(match[1]);
+                    const total = parseInt(match[2]);
+                    if (total > compromissos[recKey].contagemParcelas) {
+                        compromissos[recKey].contagemParcelas = total;
+                    }
+                }
+            });
+
+            Object.values(compromissos).forEach(c => {
+                // Tenta encontrar a menor parcela presente no histórico real
+                let minParcela = Infinity;
+                let valorReferencia = 0;
+
+                c.historico.forEach(h => {
+                    const m = h.parcela.match(/^(\d+)/);
+                    if (m) {
+                        const p = parseInt(m[1]);
+                        if (p < minParcela) {
+                            minParcela = p;
+                            valorReferencia = h.valor;
+                        }
+                    }
+                });
+
+                // Se a menor parcela for > 1, significa que houve pagamentos antes do app registrar
+                if (minParcela !== Infinity && minParcela > 1) {
+                    const mesesVirtuais = minParcela - 1;
+                    const valorVirtual = mesesVirtuais * valorReferencia;
+
+                    c.valorTotalPago += valorVirtual;
+                    c.mesesPagos += mesesVirtuais;
+                }
+            });
+
+            return Object.values(compromissos);
+        } catch (error) {
+            console.error('❌ Erro ao buscar histórico de recorrentes:', error);
+            return [];
+        }
+    },
+
+    async limparDadosOrfaos() {
+        console.log('🧹 Iniciando limpeza radical de órfãos...');
+        try {
+            const snapshot = await database.ref('transacoes').once('value');
+            const allTrans = snapshot.val() || {};
+            const updates = {};
+            let count = 0;
+
+            Object.entries(allTrans).forEach(([id, t]) => {
+                // Se não tem pessoa, DELETAR permanentemente
+                if (!t.pessoa) {
+                    updates[`transacoes/${id}`] = null;
+                    count++;
+                    console.log(`🗑️ Removendo item órfão ${id}: ${t.descricao || 'Sem descrição'}`);
+                }
+            });
+
+            if (Object.keys(updates).length > 0) {
+                await database.ref().update(updates);
+                console.log(`🚀 Limpeza concluída! ${count} itens removidos.`);
+            } else {
+                console.log('✨ Nenhum item órfão encontrado para remover.');
+            }
+
+            return count;
+        } catch (error) {
+            console.error('❌ Erro na limpeza de dados:', error);
+            throw error;
+        }
     },
 
     // ========== STATUS ==========

@@ -1,5 +1,5 @@
 // Service Worker for PWA offline support
-const CACHE_NAME = 'financas-v2';
+const CACHE_NAME = 'financas-v3';
 const ASSETS = [
     './',
     './index.html',

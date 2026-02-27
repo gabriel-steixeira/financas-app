@@ -10,10 +10,11 @@
   let currentMonth = 'fevereiro';
   let currentPage = 'dashboard';
   let cachedData = null;
-  let cachedInvestimentos = null;
+  let cachedInvestimentos = { personInv: {}, totalInfo: { total: 0, cotacaoDolar: 5.45 } };
   let useFirebase = true;
   let loading = false;
   let autoGenChecked = false;
+  let currentPagamentosTab = 'recorrentes'; // 'faturas' ou 'recorrentes'
 
   // Meses dinâmicos - base fixa + expandível
   let months = ['novembro', 'dezembro', 'janeiro', 'fevereiro'];
@@ -165,14 +166,15 @@
     await loadData();
     const isConfig = currentPage === 'config';
     const isInvest = currentPage === 'investimentos';
-    if (isInvest) await loadInvestimentos();
+    await loadInvestimentos();
+    await processarBeneficiosPendentes();
 
     const sections = [renderHeader()];
     if (!isConfig) sections.push(renderMonthSelector());
     sections.push(currentPage === 'dashboard' ? await renderDashboard() : renderDashboardHidden());
     sections.push(renderReceitas());
     sections.push(renderGastos());
-    sections.push(renderFaturas());
+    sections.push(renderPagamentos());
     sections.push(isInvest ? renderInvestimentos() : renderInvestimentosHidden());
     sections.push(renderConfig());
     sections.push(renderBottomNav());
@@ -207,7 +209,7 @@
     <div class="header">
       <div class="header-top">
         <div>
-          <h1>💰 Finanças</h1>
+          <h1><span class="logo-emoji">💰</span> Finanças</h1>
           <div class="header-subtitle">${monthFull[currentMonth]}</div>
         </div>
         
@@ -286,10 +288,10 @@
             <div class="label">Gastos</div>
             <div class="value negative">${formatCurrency(d.totalGastos)}</div>
           </div>
-          <div class="summary-card" onclick="navigateTo('faturas')">
+          <div class="summary-card" onclick="navigateTo('pagamentos')">
             <div class="icon orange">💳</div>
-            <div class="label">Faturas</div>
-            <div class="value">${Object.keys(d.faturas || {}).length} cartões</div>
+            <div class="label">Pagamentos</div>
+            <div class="value">${Object.keys(d.faturas || {}).length} faturas</div>
           </div>
           <div class="summary-card" onclick="navigateTo('investimentos')">
             <div class="icon purple">💎</div>
@@ -432,35 +434,53 @@
     }).join('');
   }
 
-  // ====== FATURAS ======
-  function renderFaturas() {
-    if (currentPage !== 'faturas') return `<div class="page" id="page-faturas"></div>`;
+  // ====== PAGAMENTOS (UNIFICADO) ======
+  function renderPagamentos() {
+    if (currentPage !== 'pagamentos') return `<div class="page" id="page-pagamentos"></div>`;
+
+    return `
+      <div class="page active" id="page-pagamentos">
+        <div class="sub-tab-selector">
+          <button class="sub-tab ${currentPagamentosTab === 'faturas' ? 'active' : ''}" onclick="switchPagamentosTab('faturas')">💳 Faturas</button>
+          <button class="sub-tab ${currentPagamentosTab === 'recorrentes' ? 'active' : ''}" onclick="switchPagamentosTab('recorrentes')">🔁 Recorrentes</button>
+        </div>
+
+        ${currentPagamentosTab === 'faturas' ? renderPagamentosFaturas() : renderPagamentosRecorrentes()}
+      </div>
+    `;
+  }
+
+  window.switchPagamentosTab = function (tab) {
+    currentPagamentosTab = tab;
+    render();
+  };
+
+  function renderPagamentosFaturas() {
     const faturas = cachedData.faturas || {};
     const keys = Object.keys(faturas);
     const isIndividual = currentPerson !== 'todos';
 
     return `
-      <div class="page active" id="page-faturas">
-        <div class="balance-card" style="background: linear-gradient(135deg, #1a0a2e 0%, #2e0f3d 50%, #3d164d 100%);">
-          <div class="label">Total de Faturas</div>
-          <div class="amount negative">${formatCurrency(keys.reduce((s, k) => s + (faturas[k].total || 0), 0))}</div>
-          <div class="detail">
-            <span>${keys.length} cartões</span>
-          </div>
+      <div class="balance-card" style="background: linear-gradient(135deg, #1a0a2e 0%, #2e0f3d 50%, #3d164d 100%); margin-top: 10px;">
+        <div class="label">Total de Faturas</div>
+        <div class="amount negative">${formatCurrency(keys.reduce((s, k) => s + (faturas[k].total || 0), 0))}</div>
+        <div class="detail">
+          <span>${keys.length} cartões</span>
         </div>
+      </div>
 
-        <div class="section-title">
-          Faturas do Mês
-          <span class="count">${keys.length}</span>
-          ${isIndividual ? `<button class="add-btn" onclick="openAddFaturaModal()">➕</button>` : ''}
+      <div class="section-title">
+        Faturas do Mês
+        <span class="count">${keys.length}</span>
+        ${isIndividual ? `<button class="add-btn" onclick="openAddFaturaModal()">➕</button>` : ''}
+      </div>
+
+      ${keys.length === 0 ? `
+        <div class="empty-state">
+          <div class="emoji">💳</div>
+          <p>Nenhuma fatura para este mês.</p>
         </div>
-
-        ${keys.length === 0 ? `
-          <div class="empty-state">
-            <div class="emoji">💳</div>
-            <p>Nenhuma fatura para este mês.</p>
-          </div>
-        ` : keys.map((key, i) => {
+      ` : keys.map((key, i) => {
       const f = faturas[key];
       const itens = Array.isArray(f.itens) ? f.itens : Object.values(f.itens || {});
       return `
@@ -474,8 +494,19 @@
                   </div>
                 </div>
                 <div style="text-align: right; display: flex; align-items: center; gap: 10px;">
-                  <div class="total-value">${formatCurrency(f.total || 0)}</div>
-                  ${isIndividual ? '<button class="btn-action-inv" onclick="event.stopPropagation(); openEditFaturaModal(\'' + key + '\')" title="Editar fatura" style="font-size:0.8rem;">✏️</button>' : ''}
+                  <div class="total-value ${f.pago ? 'paid' : ''}" style="${f.pago ? 'color: var(--green); text-decoration: line-through; opacity: 0.6;' : ''}">${formatCurrency(f.total || 0)}</div>
+                  ${isIndividual ? `
+                    ${f.vencimento ? `
+                      <button class="btn-action-inv" onclick="event.stopPropagation(); setFaturaPaga('${key}', ${!f.pago})" title="${f.pago ? 'Desmarcar pagamento' : 'Marcar como paga'}">
+                        ${f.pago ? '✅' : '⚪'}
+                      </button>
+                    ` : `
+                      <button class="btn-action-inv" title="Adicione um vencimento na edição da fatura para pagar" style="opacity: 0.3; cursor: not-allowed;" onclick="event.stopPropagation(); alert('Edite a fatura e defina o dia de vencimento para ativar opções de pagamento.')">
+                        ⚪
+                      </button>
+                    `}
+                    <button class="btn-action-inv" onclick="event.stopPropagation(); openEditFaturaModal('${key}')" title="Configurar benefícios">⚙️</button>
+                  ` : ''}
                   <span class="chevron">▼</span>
                 </div>
               </div>
@@ -489,13 +520,97 @@
                     <div class="item-value">${formatCurrency(item.valor)}</div>
                   </div>
                 `).join('')}
-                ${isIndividual ? '<div class="fatura-item" style="justify-content:center; opacity:0.6; cursor:pointer;" onclick="openAddFaturaItemModal(\'' + key + '\')">➕ Adicionar item</div>' : ''}
+                ${isIndividual ? `<div class="fatura-item" style="justify-content:center; opacity:0.6; cursor:pointer;" onclick="openAddFaturaItemModal('${key}')">➕ Adicionar item</div>` : ''}
               </div>
             </div>
           `;
     }).join('')}
+    `;
+  }
+
+  function renderPagamentosRecorrentes() {
+    const allTrans = [...(cachedData.receitas || []), ...(cachedData.gastos || [])];
+    const recs = allTrans.filter(t => !!t.parcela);
+
+    const totalMesRec = recs.reduce((s, r) => s + Math.abs(r.valor), 0);
+    const byCompromisso = {};
+    recs.forEach(r => {
+      const key = r.descricao || r.categoria;
+      if (!byCompromisso[key]) byCompromisso[key] = 0;
+      byCompromisso[key] += Math.abs(r.valor);
+    });
+
+    return `
+      <div class="chart-container" style="margin-top: 10px;">
+        <h3>📊 Pesos dos Recorrentes (Este Mês)</h3>
+        <div class="donut-container">
+          <svg class="donut" viewBox="0 0 42 42">
+            ${totalMesRec > 0 ? renderDonutRec(byCompromisso, totalMesRec) : ''}
+          </svg>
+          <div class="donut-legend">
+            ${Object.entries(byCompromisso)
+        .sort((a, b) => b[1] - a[1])
+        .map(([nome, valor], i) => {
+          const colors = ['#30d158', '#0a84ff', '#bf5af2', '#ff9f0a', '#ff453a', '#64d2ff', '#ff375f'];
+          const color = colors[i % colors.length];
+          return `
+                  <div class="legend-item" style="margin-bottom: 4px;">
+                    <span class="legend-dot" style="background: ${color}"></span>
+                    <span class="legend-label" style="max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${nome}</span>
+                    <span class="legend-value">${Math.round(valor / totalMesRec * 100)}%</span>
+                  </div>
+                `;
+        }).join('')}
+          </div>
+        </div>
+      </div>
+
+      <div class="section-title">
+        Compromissos Ativos
+        <span class="count">${recs.length}</span>
+      </div>
+
+      <div class="transaction-list">
+        ${recs.map((r, i) => `
+          <div class="transaction-item" style="animation-delay: ${i * 40}ms" data-recid="${r.recorrenteId || (r.pessoa + '_' + r.descricao + '_' + r.categoria)}" onclick="openRecorrenteDetail(this.dataset.recid)">
+            <div class="cat-icon" style="background: var(--bg-card-hover)">🔁</div>
+            <div class="info">
+              <div class="name">${r.descricao}${currentPerson === 'todos' && r.pessoa ? ' <small style="opacity:0.5">(' + r.pessoa + ')</small>' : ''}</div>
+              <div class="desc">
+                <span class="cat-badge">${r.parcela}</span>
+                ${r.dataFinal ? `<small style="margin-left:5px; opacity:0.6">até ${r.dataFinal}</small>` : ''}
+              </div>
+            </div>
+            <div class="amount negative">
+              ${formatCurrency(r.valor)}
+              <span class="date">Clique para detalhes</span>
+            </div>
+          </div>
+        `).join('')}
       </div>
     `;
+  }
+
+  function renderDonutRec(byCompromisso, total) {
+    const entries = Object.entries(byCompromisso).sort((a, b) => b[1] - a[1]);
+    let offset = 0;
+    const circumference = 2 * Math.PI * 15.91549431;
+    const colors = ['#30d158', '#0a84ff', '#bf5af2', '#ff9f0a', '#ff453a', '#64d2ff', '#ff375f'];
+
+    return entries.map(([nome, valor], i) => {
+      const pct = valor / total;
+      const dash = pct * circumference;
+      const gap = circumference - dash;
+      const currentOffset = offset;
+      offset += pct * 100;
+      const color = colors[i % colors.length];
+
+      return `<circle cx="21" cy="21" r="15.91549431" fill="transparent"
+        stroke="${color}" stroke-width="5"
+        stroke-dasharray="${dash} ${gap}"
+        stroke-dashoffset="${-currentOffset * circumference / 100}"
+        transform="rotate(-90 21 21)" />`;
+    }).join('');
   }
 
   // ====== INVESTIMENTOS ======
@@ -640,6 +755,10 @@
           <button class="config-btn test" onclick="reGenerateNextMonth()" style="background: var(--orange); color: #fff;">
             🔄 Re-gerar Próximo Mês (${MONTH_NAMES[new Date().getMonth() + 2] || MONTH_NAMES[1]})
           </button>
+
+          <button class="config-btn" onclick="limparDadosOrfaos()" style="background: var(--red-dim); color: var(--red); border: 1px solid var(--red-dim);">
+            <span>🗑️</span> Limpeza Radical de Órfãos
+          </button>
           <div id="config-message" style="display: none;"></div>
 
           <div style="margin-top: 24px; border-top: 1px solid var(--border);">
@@ -679,7 +798,7 @@
       { id: 'dashboard', icon: '🏠', label: 'Início' },
       { id: 'receitas', icon: '📥', label: 'Receitas' },
       { id: 'gastos', icon: '📤', label: 'Gastos' },
-      { id: 'faturas', icon: '💳', label: 'Faturas' },
+      { id: 'pagamentos', icon: '💳', label: 'Pagamentos' },
       { id: 'investimentos', icon: '💎', label: 'Invest.' },
       { id: 'config', icon: '⚙️', label: 'Config' },
     ];
@@ -737,6 +856,11 @@
       ? ['Salário', 'Pix', 'Extra', 'Benefício', 'Retirada Investimento', 'Sobra do Mês passado']
       : ['Boleto', 'Fatura cartão', 'Investimento', 'Presente', 'Transporte', 'Alimentação', 'Coleta'];
 
+    const personInv = (cachedInvestimentos && cachedInvestimentos.personInv) ? cachedInvestimentos.personInv : {};
+    const investOptions = Object.entries(personInv)
+      .map(([id, inv]) => `<option value="${id}">${inv.nome} (${inv.moeda === 'USD' ? 'US$' : 'R$'} ${inv.valor})</option>`)
+      .join('');
+
     showModal(`
       <div class="modal-header">
         <h3>${tipo === 'receita' ? '📥 Nova Receita' : '📤 Novo Gasto'}</h3>
@@ -749,10 +873,35 @@
         </div>
         <div class="form-group">
           <label>Categoria</label>
-          <select type="text" id="f-categoria" required>
+          <select id="f-categoria" required onchange="window.toggleInvestFields(this.value)">
             ${categorias.map(c => `<option value="${c}">${c}</option>`).join('')}
           </select>
         </div>
+
+        <div id="invest-fields" style="display:none; margin-bottom: 15px; padding: 12px; background: rgba(0, 122, 255, 0.05); border: 1px solid rgba(0, 122, 255, 0.2); border-radius: 8px;">
+          <div class="form-group">
+            <label>Selecionar Investimento</label>
+            <select id="f-invest-id" onchange="window.toggleNewInvestFields(this.value)">
+              <option value="">-- Selecione --</option>
+              ${investOptions}
+              <option value="novo" style="font-weight:bold; color:var(--blue);">➕ Novo Investimento...</option>
+            </select>
+          </div>
+          <div id="new-invest-fields" style="display:none; margin-top:10px; border-top:1px solid rgba(255,255,255,0.05); padding-top:10px;">
+            <div class="form-group">
+              <label>Nome do Novo Ativo</label>
+              <input type="text" id="f-new-invest-nome" placeholder="Ex: CDB Banco X">
+            </div>
+            <div class="form-group">
+              <label>Moeda</label>
+              <select id="f-new-invest-moeda">
+                <option value="BRL">Real (R$)</option>
+                <option value="USD">Dólar (US$)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
         <div class="form-group">
           <label>Descrição</label>
           <input type="text" id="f-descricao" placeholder="Ex: Salário, Conta de luz..." required>
@@ -761,11 +910,65 @@
           <label>Valor (R$)</label>
           <input type="number" id="f-valor" step="0.01" min="0" placeholder="0,00" required>
         </div>
+        
+        <div id="recorrente-container" class="form-group" style="margin-top: 10px; padding: 10px; background: rgba(255,255,255,0.03); border-radius: 8px;">
+          <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:600;">
+            <input type="checkbox" id="f-recorrente" onchange="document.getElementById('recorrencia-fields').style.display = this.checked ? 'block' : 'none'"> 
+            🔁 Recorrente (mensal ou parcelado)
+          </label>
+          
+          <div id="recorrencia-fields" style="display:none; margin-top:10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top:10px;">
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+              <div class="form-group">
+                <label>Parcela nº</label>
+                <input type="number" id="f-parcela-atual" placeholder="Ex: 8" oninput="window.updateParcelaLogic()">
+              </div>
+              <div class="form-group">
+                <label>Total de Parcelas</label>
+                <input type="number" id="f-parcela-total" placeholder="Ex: 46">
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Data Final (opcional)</label>
+              <input type="text" id="f-dataFinal" placeholder="MM/AAAA" oninput="window.updateParcelaLogic()">
+              <small style="opacity:0.5; font-size:0.7rem;">Preencha a data final para calcular o total automaticamente.</small>
+            </div>
+          </div>
+        </div>
+
         <button type="submit" class="config-btn save" style="width:100%; margin-top: 12px;">
           ✅ Adicionar ${tipo === 'receita' ? 'Receita' : 'Gasto'}
         </button>
       </form>
     `);
+
+    // Iniciar campos se necessário
+    window.toggleInvestFields(document.getElementById('f-categoria').value);
+  };
+
+  window.toggleInvestFields = function (cat) {
+    const elInv = document.getElementById('invest-fields');
+    if (elInv) elInv.style.display = (cat === 'Investimento' || cat === 'Retirada Investimento') ? 'block' : 'none';
+
+    const elRec = document.getElementById('recorrente-container');
+    if (elRec) {
+      const isExcluido = (cat === 'Investimento' || cat === 'Retirada Investimento' || cat === 'Fatura cartão');
+      elRec.style.display = isExcluido ? 'none' : 'block';
+      // Se esconder, desmarcar o checkbox de recorrência
+      if (isExcluido) {
+        const checkbox = document.getElementById('f-recorrente');
+        if (checkbox) {
+          checkbox.checked = false;
+          const fields = document.getElementById('recorrencia-fields');
+          if (fields) fields.style.display = 'none';
+        }
+      }
+    }
+  };
+
+  window.toggleNewInvestFields = function (val) {
+    const el = document.getElementById('new-invest-fields');
+    if (el) el.style.display = (val === 'novo') ? 'block' : 'none';
   };
 
   window.submitAdd = async function (e, tipo) {
@@ -774,19 +977,80 @@
     const dateParts = dataInput.split('-');
     const dataFormatted = `${dateParts[2]}/${dateParts[1]}/${dateParts[0]}`;
 
+    const categoria = document.getElementById('f-categoria').value;
+    const valor = parseFloat(document.getElementById('f-valor').value);
+    const pessoa = currentPerson === 'todos' ? 'gabriel' : currentPerson;
+    const mesKey = monthKeys[currentMonth];
+
+    let investId = document.getElementById('f-invest-id')?.value;
+
+    // Lógica de Integração com Investimentos
+    if (categoria === 'Investimento' || categoria === 'Retirada Investimento') {
+      if (investId === 'novo') {
+        const novoNome = document.getElementById('f-new-invest-nome').value;
+        const novaMoeda = document.getElementById('f-new-invest-moeda').value;
+        if (!novoNome) { alert('Informe o nome do novo investimento.'); return; }
+
+        // Criar novo investimento
+        const newKey = await DB.addInvestimento({
+          pessoa,
+          mes: mesKey,
+          nome: novoNome,
+          valor: 0, // Inicia com 0, o aporte será somado abaixo
+          moeda: novaMoeda
+        });
+        investId = newKey;
+      }
+
+      if (investId) {
+        const personInv = (cachedInvestimentos && cachedInvestimentos.personInv) ? cachedInvestimentos.personInv : {};
+        const inv = personInv[investId];
+        if (categoria === 'Retirada Investimento') {
+          if (inv && inv.valor < valor) {
+            alert(`Saldo insuficiente no investimento ${inv.nome}. Saldo disponível: ${formatCurrency(inv.valor, inv.moeda)}`);
+            return;
+          }
+          // Decrementar saldo
+          await DB.updateInvestimento(investId, { valor: inv.valor - valor });
+        } else {
+          // Incrementar saldo (Aporte/Investimento)
+          const atualVal = inv ? inv.valor : 0;
+          await DB.updateInvestimento(investId, { valor: atualVal + valor });
+        }
+      }
+    }
+
+    const isRec = document.getElementById('f-recorrente').checked;
+    const pAtu = document.getElementById('f-parcela-atual').value;
+    const pTot = document.getElementById('f-parcela-total').value;
+    const parcelaStr = isRec ? (pTot ? `${pAtu} de ${pTot}` : (pAtu || 'Mensal')) : null;
+
     const dados = {
-      pessoa: currentPerson === 'todos' ? 'gabriel' : currentPerson,
-      mes: monthKeys[currentMonth],
+      pessoa,
+      mes: mesKey,
       tipo,
       data: dataFormatted,
-      categoria: document.getElementById('f-categoria').value,
+      categoria,
       descricao: document.getElementById('f-descricao').value,
-      valor: parseFloat(document.getElementById('f-valor').value)
+      valor,
+      parcela: parcelaStr,
+      dataFinal: isRec ? (document.getElementById('f-dataFinal').value || null) : null,
+      recorrenteId: isRec ? (database.ref().push().key) : null,
+      dataInicio: isRec ? dataFormatted : null,
+      investId: investId || null // Vincular ID do investimento à transação
     };
 
     const key = await DB.addTransacao(dados);
     if (key) {
       closeModal();
+
+      // Garantir que o PRÓXIMO mês exista no seletor de meses por segurança
+      let checkMes = dados.mes;
+      for (let i = 0; i < 1; i++) {
+        checkMes = DB._getProximoMes(checkMes);
+        addMonthToSystem(checkMes);
+      }
+
       await render();
     } else {
       alert('Erro ao salvar. Verifique o console.');
@@ -805,31 +1069,157 @@
     let dateVal = '';
     if (t.data) { const p = t.data.split('/'); if (p.length === 3) dateVal = p[2] + '-' + p[1] + '-' + p[0]; }
 
-    showModal(
-      '<div class="modal-header"><h3>✏️ Editar ' + (tipo === 'receita' ? 'Receita' : 'Gasto') + '</h3><button class="modal-close" onclick="closeModal()">✕</button></div>' +
-      '<form id="edit-form" onsubmit="submitEdit(event, \'' + id + '\', \'' + tipo + '\')">' +
-      '<div class="form-group"><label>Data</label><input type="date" id="f-data" value="' + dateVal + '"></div>' +
-      '<div class="form-group"><label>Categoria</label><select id="f-categoria">' + categorias.map(function (c) { return '<option value="' + c + '"' + (c === t.categoria ? ' selected' : '') + '>' + c + '</option>'; }).join('') + '</select></div>' +
-      '<div class="form-group"><label>Descrição</label><input type="text" id="f-descricao" value="' + (t.descricao || '').replace(/"/g, '&quot;') + '" required></div>' +
-      '<div class="form-group"><label>Valor (R$)</label><input type="number" id="f-valor" step="0.01" value="' + t.valor + '" required></div>' +
-      '<button type="submit" class="config-btn save" style="width:100%; margin-top: 12px;">💾 Salvar Alterações</button></form>'
-    );
+    const match = (t.parcela || '').match(/(\d+)\s*de\s*(\d+)/i);
+    const pAtual = match ? match[1] : (t.parcela || '');
+    const pTotal = match ? match[2] : '';
+    const isRecorrente = !!t.parcela;
+
+    const personInv = (cachedInvestimentos && cachedInvestimentos.personInv) ? cachedInvestimentos.personInv : {};
+    const investOptions = Object.entries(personInv)
+      .map(([id, inv]) => `<option value="${id}" ${t.investId === id ? 'selected' : ''}>${inv.nome} (${inv.moeda === 'USD' ? 'US$' : 'R$'} ${inv.valor})</option>`)
+      .join('');
+
+    showModal(`
+      <div class="modal-header"><h3>✏️ Editar ${tipo === 'receita' ? 'Receita' : 'Gasto'}</h3><button class="modal-close" onclick="closeModal()">✕</button></div>
+      <form id="edit-form" onsubmit="submitEdit(event, '${id}', '${tipo}')">
+        <div class="form-group"><label>Data</label><input type="date" id="f-data" value="${dateVal}" oninput="window.updateParcelaLogic()"></div>
+        <div class="form-group">
+          <label>Categoria</label>
+          <select id="f-categoria" onchange="window.toggleInvestFields(this.value)">
+            ${categorias.map(c => `<option value="${c}" ${c === t.categoria ? 'selected' : ''}>${c}</option>`).join('')}
+          </select>
+        </div>
+
+        <div id="invest-fields" style="display:${(t.categoria === 'Investimento' || t.categoria === 'Retirada Investimento') ? 'block' : 'none'}; margin-bottom: 15px; padding: 12px; background: rgba(0, 122, 255, 0.05); border: 1px solid rgba(0, 122, 255, 0.2); border-radius: 8px;">
+          <div class="form-group">
+            <label>Selecionar Investimento</label>
+            <select id="f-invest-id">
+              <option value="">-- Selecione --</option>
+              ${investOptions}
+            </select>
+          </div>
+          <small style="opacity:0.6; font-size:0.7rem;">Na edição, para novos ativos, crie-os primeiro na aba investimentos.</small>
+        </div>
+
+        <div class="form-group"><label>Descrição</label><input type="text" id="f-descricao" value="${(t.descricao || '').replace(/"/g, '&quot;')}" required></div>
+        <div class="form-group"><label>Valor (R$)</label><input type="number" id="f-valor" step="0.01" value="${t.valor}" required></div>
+
+        <div id="recorrente-container" class="form-group" style="margin-top: 10px; padding: 10px; background: rgba(255,255,255,0.03); border-radius: 8px;">
+          <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:600;">
+            <input type="checkbox" id="f-recorrente" onchange="document.getElementById('recorrencia-fields').style.display = this.checked ? 'block' : 'none'" ${isRecorrente ? 'checked' : ''}> 
+            🔁 Recorrente (mensal ou parcelado)
+          </label>
+          <div id="recorrencia-fields" style="display:${isRecorrente ? 'block' : 'none'}; margin-top:10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top:10px;">
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+              <div class="form-group"><label>Parcela nº</label><input type="number" id="f-parcela-atual" value="${pAtual}" oninput="window.updateParcelaLogic()"></div>
+              <div class="form-group"><label>Total de Parcelas</label><input type="number" id="f-parcela-total" value="${pTotal}"></div>
+            </div>
+            <div class="form-group"><label>Data Final (opcional)</label><input type="text" id="f-dataFinal" placeholder="MM/AAAA" value="${t.dataFinal || ''}" oninput="window.updateParcelaLogic()"></div>
+          </div>
+        </div>
+
+        <button type="submit" class="config-btn save" style="width:100%; margin-top: 12px;">💾 Salvar Alterações</button>
+      </form>
+    `);
   };
 
   window.submitEdit = async function (e, id, tipo) {
     e.preventDefault();
+    const all = [...(cachedData.receitas || []), ...(cachedData.gastos || [])];
+    const transacaoOriginal = all.find(x => x.id === id);
+    if (!transacaoOriginal) return;
+
     const dataInput = document.getElementById('f-data').value;
     let dataFormatted = '';
     if (dataInput) { const dp = dataInput.split('-'); dataFormatted = dp[2] + '/' + dp[1] + '/' + dp[0]; }
+
+    const categoria = document.getElementById('f-categoria').value;
+    const valor = parseFloat(document.getElementById('f-valor').value);
+    const pessoa = transacaoOriginal.pessoa;
+    const investIdNovo = document.getElementById('f-invest-id')?.value || null;
+    const investIdAntigo = transacaoOriginal.investId || null;
+
+    // Lógica de Sincronização de Investimento na Edição
+    // 1. Reverter impacto anterior se existia
+    // 1. Reverter impacto anterior se existia
+    if (investIdAntigo) {
+      const personInv = (cachedInvestimentos && cachedInvestimentos.personInv) ? cachedInvestimentos.personInv : {};
+      const invAntigo = personInv[investIdAntigo];
+      if (invAntigo) {
+        const fator = transacaoOriginal.categoria === 'Retirada Investimento' ? 1 : -1;
+        await DB.updateInvestimento(investIdAntigo, { valor: invAntigo.valor + (transacaoOriginal.valor * fator) });
+      }
+    }
+
+    // 2. Aplicar novo impacto se categoria for investimento
+    if (categoria === 'Investimento' || categoria === 'Retirada Investimento') {
+      if (investIdNovo) {
+        // Recarregar investimento para pegar valor atualizado após reversão acima
+        const invNovoSnap = await database.ref(`investimentos/${investIdNovo}`).once('value');
+        const invNovo = invNovoSnap.val();
+
+        if (invNovo) {
+          if (categoria === 'Retirada Investimento') {
+            if (invNovo.valor < valor) {
+              alert(`Saldo insuficiente no investimento ${invNovo.nome}.`);
+              return;
+            }
+            await DB.updateInvestimento(investIdNovo, { valor: invNovo.valor - valor });
+          } else {
+            await DB.updateInvestimento(investIdNovo, { valor: invNovo.valor + valor });
+          }
+        }
+      }
+    }
+
+    const isRecorrenteAgora = document.getElementById('f-recorrente').checked;
+    const recId = isRecorrenteAgora ? (transacaoOriginal.recorrenteId || database.ref().push().key) : null;
+    const dataIni = isRecorrenteAgora ? (transacaoOriginal.dataInicio || dataFormatted) : null;
+
+    const isRec = document.getElementById('f-recorrente').checked;
+    const pAtu = document.getElementById('f-parcela-atual').value;
+    const pTot = document.getElementById('f-parcela-total').value;
+    const parcelaStr = isRec ? (pTot ? `${pAtu} de ${pTot}` : (pAtu || 'Mensal')) : null;
+
     const dados = {
+      pessoa: transacaoOriginal.pessoa,
       tipo: tipo,
       data: dataFormatted,
-      categoria: document.getElementById('f-categoria').value,
+      categoria,
       descricao: document.getElementById('f-descricao').value,
-      valor: parseFloat(document.getElementById('f-valor').value)
+      valor,
+      parcela: parcelaStr,
+      dataFinal: isRec ? (document.getElementById('f-dataFinal').value || null) : null,
+      recorrenteId: recId,
+      dataInicio: dataIni,
+      mes: transacaoOriginal.mes,
+      investId: investIdNovo
     };
-    const ok = await DB.updateTransacao(id, dados);
-    if (ok) { closeModal(); await render(); } else { alert('Erro ao atualizar.'); }
+
+    let propagar = false;
+    const jaEraRecorrente = !!transacaoOriginal.parcela;
+    if (isRecorrenteAgora) {
+      if (jaEraRecorrente) {
+        propagar = confirm('Deseja aplicar estas alterações (descrição, categoria, valor, data final) também para os meses futuros deste compromisso?');
+      } else {
+        propagar = true;
+      }
+    }
+
+    const ok = await DB.updateTransacao(id, dados, propagar);
+    if (ok) {
+      closeModal();
+      if (isRecorrenteAgora) {
+        let checkMes = dados.mes;
+        for (let i = 0; i < 1; i++) {
+          checkMes = DB._getProximoMes(checkMes);
+          addMonthToSystem(checkMes);
+        }
+      }
+      await render();
+    } else {
+      alert('Erro ao atualizar.');
+    }
   };
 
   // ====== CRUD FATURAS UI ======
@@ -857,21 +1247,68 @@
   window.openEditFaturaModal = function (faturaId) {
     const f = cachedData.faturas[faturaId];
     if (!f) return;
-    showModal(
-      '<div class="modal-header"><h3>✏️ Editar Fatura</h3><button class="modal-close" onclick="closeModal()">✕</button></div>' +
-      '<form onsubmit="submitEditFatura(event, \'' + faturaId + '\')">' +
-      '<div class="form-group"><label>Nome do Cartão</label><input type="text" id="fat-cartao" value="' + (f.cartao || f.nome) + '" required></div>' +
-      '<div class="form-group"><label>Dia do Vencimento</label><input type="number" id="fat-vencimento" min="1" max="31" value="' + (f.vencimento || '') + '"></div>' +
-      '<button type="submit" class="config-btn save" style="width:100%; margin-top: 12px;">💾 Salvar</button>' +
-      '<button type="button" class="config-btn test" style="width:100%; margin-top: 8px; background: var(--red-dim); color: var(--red);" onclick="deleteFaturaUI(\'' + faturaId + '\')">🗑️ Excluir Fatura</button></form>'
-    );
+
+    const b = f.beneficio || { tipo: 'nenhum', valor: '', investId: '' };
+
+    // Lista de investimentos da pessoa proprietária da fatura
+    const personInv = (cachedInvestimentos && cachedInvestimentos.personInv) ? cachedInvestimentos.personInv : {};
+    const investOptions = Object.entries(personInv)
+      .filter(([_, inv]) => inv.pessoa === f.pessoa)
+      .map(([id, inv]) => `<option value="${id}" ${b.investId === id ? 'selected' : ''}>${inv.nome}</option>`)
+      .join('');
+
+    showModal(`
+      <div class="modal-header"><h3>✏️ Editar Fatura</h3><button class="modal-close" onclick="closeModal()">✕</button></div>
+      <form onsubmit="submitEditFatura(event, '${faturaId}')">
+        <div class="form-group"><label>Nome do Cartão</label><input type="text" id="fat-cartao" value="${f.cartao || f.nome}" required></div>
+        <div class="form-group"><label>Dia do Vencimento</label><input type="number" id="fat-vencimento" min="1" max="31" value="${f.vencimento || ''}"></div>
+        
+        <div style="margin-top: 15px; padding: 12px; background: rgba(168, 85, 247, 0.05); border: 1px solid rgba(168, 85, 247, 0.2); border-radius: 8px;">
+          <label style="font-weight:600; color:var(--purple); display:block; margin-bottom:8px;">🎁 Benefício Automático (App recompensa)</label>
+          <div class="form-group">
+            <label>Tipo de Regra</label>
+            <select id="fat-ben-tipo" onchange="document.getElementById('ben-valor-group').style.display = this.value === 'nenhum' ? 'none' : 'block'">
+              <option value="nenhum" ${b.tipo === 'nenhum' ? 'selected' : ''}>Nenhum</option>
+              <option value="cashback" ${b.tipo === 'cashback' ? 'selected' : ''}>% Cashback</option>
+              <option value="pontos" ${b.tipo === 'pontos' ? 'selected' : ''}>Pontos (1 : R$)</option>
+            </select>
+          </div>
+          <div id="ben-valor-group" style="display: ${b.tipo === 'nenhum' ? 'none' : 'block'}">
+            <div class="form-group">
+              <label>Valor da Regra (Ex: 1 ou 5)</label>
+              <input type="number" id="fat-ben-valor" step="0.01" value="${b.valor || ''}" placeholder="Ex: 1 para 1% ou 5 para 1pt por R$5">
+            </div>
+            <div class="form-group">
+              <label>Ativo de Destino</label>
+              <select id="fat-ben-investId">
+                <option value="">-- Selecione o Ativo --</option>
+                ${investOptions}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <button type="submit" class="config-btn save" style="width:100%; margin-top: 12px;">💾 Salvar</button>
+        <button type="button" class="config-btn test" style="width:100%; margin-top: 8px; background: var(--red-dim); color: var(--red);" onclick="deleteFaturaUI('${faturaId}')">🗑️ Excluir Fatura</button>
+      </form>
+    `);
   };
 
   window.submitEditFatura = async function (e, faturaId) {
     e.preventDefault();
+
+    const tipoBen = document.getElementById('fat-ben-tipo').value;
+    const beneficio = tipoBen === 'nenhum' ? null : {
+      tipo: tipoBen,
+      valor: parseFloat(document.getElementById('fat-ben-valor').value.replace(',', '.')) || 0,
+      investId: document.getElementById('fat-ben-investId').value,
+      processado: cachedData.faturas[faturaId]?.beneficio?.processado || false
+    };
+
     await DB.updateFatura(faturaId, {
       cartao: document.getElementById('fat-cartao').value.toUpperCase(),
-      vencimento: document.getElementById('fat-vencimento').value || ''
+      vencimento: document.getElementById('fat-vencimento').value || '',
+      beneficio
     });
     closeModal(); await render();
   };
@@ -937,6 +1374,78 @@
     closeModal(); await render();
   };
 
+  window.setFaturaPaga = async function (faturaId, status) {
+    if (status && !confirm('Confirmar pagamento desta fatura?')) return;
+    await DB.updateFatura(faturaId, { pago: status });
+    await render();
+  };
+
+  async function processarBeneficiosPendentes() {
+    if (!cachedData.faturas || !cachedInvestimentos || !cachedInvestimentos.personInv) return;
+    const hoje = new Date();
+    let houveMudanca = false;
+
+    for (const [id, f] of Object.entries(cachedData.faturas)) {
+      if (f.pago && f.beneficio && f.beneficio.tipo !== 'nenhum' && !f.beneficio.processado) {
+        // Verificar se já passou do vencimento
+        let dataVenc;
+        if (f.mes && f.mes.includes('-')) {
+          const [fAno, fMes] = f.mes.split('-').map(Number);
+          const diaVenc = parseInt(f.vencimento) || 28;
+          dataVenc = new Date(fAno, fMes - 1, diaVenc);
+        } else {
+          // Fallback seguro caso o campo mes esteja corrompido ou em outro formato
+          continue;
+        }
+
+        // O benefício ocorre APÓS o vencimento e pagamento
+        if (hoje > dataVenc) {
+          const valorFatura = f.total || 0;
+          let ganho = 0;
+          if (f.beneficio.tipo === 'cashback') {
+            ganho = valorFatura * (f.beneficio.valor / 100);
+          } else if (f.beneficio.tipo === 'pontos') {
+            ganho = valorFatura / (f.beneficio.valor || 1); // Ex: 1 ponto a cada R$ 5
+          }
+
+          if (ganho > 0 && f.beneficio.investId) {
+            const inv = cachedInvestimentos.personInv[f.beneficio.investId];
+            if (inv) {
+              await DB.updateInvestimento(f.beneficio.investId, { valor: inv.valor + ganho });
+              const novoBen = { ...f.beneficio, processado: true, valorGanho: ganho, dataProcessado: new Date().toISOString() };
+              await DB.updateFatura(id, { beneficio: novoBen });
+              console.log(`🎁 [AUTO] Benefício de ${ganho.toFixed(2)} processado para ${inv.nome} (Fatura ${f.cartao})`);
+              houveMudanca = true;
+            }
+          }
+        }
+      }
+    }
+    if (houveMudanca) await render();
+  }
+
+  window.onInvestValorChange = function (inputEl, valorAntigo) {
+    const novoValor = parseFloat(inputEl.value) || 0;
+    const diff = novoValor - valorAntigo;
+    const container = document.getElementById('tipo-ajuste-container');
+    const select = document.getElementById('inv-tipo-ajuste');
+    const label = document.getElementById('tipo-ajuste-label');
+
+    if (Math.abs(diff) >= 0.01) {
+      container.style.display = 'block';
+      if (diff > 0) {
+        label.innerText = '💎 Origem do Aumento';
+        select.innerHTML = '<option value="aporte">💰 Aporte Próprio (Gasto)</option><option value="rendimento">📈 Rendimento/Valorização (Sem Transação)</option>';
+      } else {
+        label.innerText = '📉 Natureza da Redução';
+        select.innerHTML = '<option value="resgate">💰 Resgate/Retirada (Receita)</option><option value="prejuizo">📉 Oscilação Negativa (Sem Transação)</option>';
+      }
+    } else {
+      container.style.display = 'none';
+      select.innerHTML = '<option value="aporte">💰 Aporte Próprio (Gasto)</option>';
+    }
+  };
+
   // ====== CRUD INVESTIMENTOS UI ======
   window.saveCotacao = async function (val) {
     const novaCotacao = parseFloat(val);
@@ -976,7 +1485,8 @@
   };
 
   window.openEditInvestimentoModal = function (id) {
-    const inv = cachedInvestimentos.personInv[id]; // cachedInvestimentos.personInv agora é map ID -> obj
+    if (!cachedInvestimentos || !cachedInvestimentos.personInv) return;
+    const inv = cachedInvestimentos.personInv[id];
     if (!inv) return;
 
     showModal(`
@@ -991,13 +1501,22 @@
       </div>
       <div class="form-group">
         <label>Valor</label>
-        <input type="number" id="inv-valor" step="0.01" min="0" value="${inv.valor}" required>
+        <input type="number" id="inv-valor" step="0.01" min="0" value="${inv.valor}" required 
+               oninput="window.onInvestValorChange(this, ${inv.valor})">
       </div>
       <div class="form-group">
         <label>Moeda</label>
         <select id="inv-moeda">
           <option value="BRL" ${inv.moeda === 'BRL' ? 'selected' : ''}>Real (R$)</option>
           <option value="USD" ${inv.moeda === 'USD' ? 'selected' : ''}>Dólar (US$)</option>
+        </select>
+      </div>
+
+      <div id="tipo-ajuste-container" style="display:none; margin-top: 10px; padding: 12px; background: rgba(0, 122, 255, 0.05); border: 1px solid rgba(0, 122, 255, 0.2); border-radius: 8px;">
+        <label id="tipo-ajuste-label" style="font-weight:600; color:var(--blue); display:block; margin-bottom:8px;">💎 Origem do Aumento</label>
+        <select id="inv-tipo-ajuste" style="background: var(--bg-card); border-color: rgba(0, 122, 255, 0.3);">
+          <option value="aporte">💰 Aporte Próprio (Gasto)</option>
+          <option value="rendimento">📈 Rendimento/Valorização (Sem Transação)</option>
         </select>
       </div>
       <button type="submit" class="config-btn save" style="width:100%; margin-top: 12px;">💾 Atualizar</button>
@@ -1007,17 +1526,64 @@
 
   window.submitInvestimento = async function (e, id = null) {
     e.preventDefault();
-    const dados = {
-      pessoa: currentPerson === 'todos' ? 'gabriel' : currentPerson,
-      mes: monthKeys[currentMonth],
-      nome: document.getElementById('inv-nome').value,
-      valor: parseFloat(document.getElementById('inv-valor').value),
-      moeda: document.getElementById('inv-moeda').value
-    };
+    const nome = document.getElementById('inv-nome').value;
+    const valorNovo = parseFloat(document.getElementById('inv-valor').value);
+    const moeda = document.getElementById('inv-moeda').value;
+    const pessoa = currentPerson === 'todos' ? 'gabriel' : currentPerson;
+    const mesKey = monthKeys[currentMonth];
+
+    const dados = { pessoa, mes: mesKey, nome, valor: valorNovo, moeda };
 
     if (id) {
+      let valorAntigo = 0;
+      if (cachedInvestimentos && cachedInvestimentos.personInv && cachedInvestimentos.personInv[id]) {
+        valorAntigo = cachedInvestimentos.personInv[id].valor || 0;
+      }
+      const diff = valorNovo - valorAntigo;
+
       await DB.updateInvestimento(id, dados);
+
+      // Registrar Gasto ou Receita se houve alteração de valor manual na aba Investimentos
+      if (Math.abs(diff) > 0.01) {
+        const agora = new Date();
+        const dataHoje = `${String(agora.getDate()).padStart(2, '0')}/${String(agora.getMonth() + 1).padStart(2, '0')}/${agora.getFullYear()}`;
+        const tipoAjuste = document.getElementById('inv-tipo-ajuste')?.value || 'aporte';
+
+        // Se for rendimento ou prejuízo, NÃO gera transação
+        if (tipoAjuste === 'rendimento' || tipoAjuste === 'prejuizo') {
+          console.log(`📈 Rendimento de R$ ${diff.toFixed(2)} registrado apenas no saldo.`);
+          closeModal();
+          await render();
+          return;
+        }
+
+        let tipoTrans, catTrans, descTrans;
+
+        if (diff > 0) {
+          tipoTrans = 'despesa';
+          catTrans = 'Investimento';
+          descTrans = `Ajuste manual (Aporte): ${nome}`;
+        } else {
+          tipoTrans = 'receita';
+          catTrans = 'Retirada Investimento';
+          descTrans = `Ajuste manual (Retirada): ${nome}`;
+        }
+
+        const transAuto = {
+          pessoa,
+          mes: mesKey,
+          tipo: tipoTrans,
+          data: dataHoje,
+          categoria: catTrans,
+          descricao: descTrans,
+          valor: Math.abs(diff),
+          investId: id
+        };
+        await DB.addTransacao(transAuto);
+        console.log(`✨ Transação automática de ajuste registrada: ${transAuto.categoria} de R$ ${transAuto.valor}`);
+      }
     } else {
+      // Novo investimento direto da aba investimentos não gera transação automática (é apenas o cadastro do saldo inicial)
       await DB.addInvestimento(dados);
     }
     closeModal();
@@ -1032,6 +1598,21 @@
 
   window.deleteItem = async function (id) {
     if (!confirm('Remover esta transação?')) return;
+
+    // Lógica de reversão de saldo se vinculado a investimento
+    const all = [...(cachedData.receitas || []), ...(cachedData.gastos || [])];
+    const t = all.find(x => x.id === id);
+    if (t && t.investId) {
+      if (cachedInvestimentos && cachedInvestimentos.personInv) {
+        const inv = cachedInvestimentos.personInv[t.investId];
+        if (inv) {
+          const fator = t.categoria === 'Retirada Investimento' ? 1 : -1;
+          await DB.updateInvestimento(t.investId, { valor: inv.valor + (t.valor * fator) });
+          console.log(`🔄 Saldo de ${inv.nome} revertido após exclusão.`);
+        }
+      }
+    }
+
     const ok = await DB.deleteTransacao(id);
     if (ok) await render();
   };
@@ -1205,6 +1786,185 @@
       el.textContent = msg;
     }
   }
+
+  window.limparDadosOrfaos = async function () {
+    if (!confirm('Deseja executar a LIMPEZA RADICAL? Isso apagará permanentemente todas as transações que não têm um dono (Gabriel ou Clara). Esta ação não pode ser desfeita.')) return;
+
+    showConfigMessage('🗑️ Iniciando limpeza radical...', 'var(--red)');
+    try {
+      const total = await DB.limparDadosOrfaos();
+      if (typeof total === 'number' && total > 0) {
+        showConfigMessage(`✅ Limpeza concluída! ${total} itens inconsistentes foram removidos.`, 'var(--green)');
+        await render();
+      } else {
+        showConfigMessage('✨ Nenhum item órfão encontrado para limpar.', 'var(--text-secondary)');
+      }
+    } catch (e) {
+      showConfigMessage('❌ Erro na limpeza: ' + e.message, 'var(--red)');
+    }
+  };
+
+  // ====== IMPORTAR INVESTIMENTOS CLARA (DEZ/JAN/FEV) ======
+  async function importarInvestimentosClara(mesKey, dados) {
+    if (!confirm(`Importar investimentos de Clara para ${DB._getMesLabel(mesKey)}?`)) return;
+
+    showConfigMessage('🔄 Importando...', 'var(--orange)');
+
+    try {
+      const check = await DB.getInvestimentos('clara', mesKey);
+      if (Object.keys(check).length > 0) {
+        showConfigMessage(`⚠️ Já existem investimentos para Clara em ${mesKey}.`, 'var(--text-secondary)');
+        return;
+      }
+
+      for (const item of dados) {
+        await DB.addInvestimento({ pessoa: 'clara', mes: mesKey, ...item });
+      }
+
+      showConfigMessage(`✅ Investimentos de Clara (${mesKey}) importados!`, 'var(--green)');
+      await render();
+    } catch (e) {
+      showConfigMessage('❌ Erro: ' + e.message, 'var(--red)');
+    }
+  }
+
+  window.importarInvestimentosClaraNov = () => importarInvestimentosClara('2025-11', [
+    { nome: 'Casamento', valor: 1464 },
+    { nome: 'Reserva', valor: 2435 }
+  ]);
+
+  window.importarInvestimentosClaraDez = () => importarInvestimentosClara('2025-12', [
+    { nome: 'Casamento', valor: 1484 },
+    { nome: 'Reserva', valor: 1935 }
+  ]);
+
+  window.importarInvestimentosClaraJan = () => importarInvestimentosClara('2026-01', [
+    { nome: 'Casamento', valor: 1530 },
+    { nome: 'Reserva', valor: 2135 }
+  ]);
+
+  window.importarInvestimentosClaraFev = () => importarInvestimentosClara('2026-02', [
+    { nome: 'Casamento', valor: 1530 },
+    { nome: 'Reserva', valor: 2135 }
+  ]);
+
+  window.reGenerateNextMonth = async function () {
+    const now = new Date();
+    const mesAtualKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const proximoMesKey = DB._getProximoMes(mesAtualKey);
+
+    if (!confirm(`Isso irá apagar todos os dados de ${DB._getMesLabel(proximoMesKey)} e recriá-los com base no mês atual (${DB._getMesLabel(mesAtualKey)}). Deseja continuar?`)) return;
+
+    showConfigMessage('🔄 Re-gerando mês...', 'var(--orange)');
+    try {
+      await DB.reGerarMes(mesAtualKey, proximoMesKey, ['gabriel', 'clara']);
+      showConfigMessage(`✅ Mês ${DB._getMesLabel(proximoMesKey)} re-gerado com sucesso!`, 'var(--green)');
+
+      // Adicionar novo mês ao sistema se não existir
+      addMonthToSystem(proximoMesKey);
+      await render();
+    } catch (e) {
+      showConfigMessage('❌ Erro: ' + e.message, 'var(--red)');
+    }
+  };
+
+  window.updateParcelaLogic = function () {
+    const elAtual = document.getElementById('f-parcela-atual');
+    const elTotal = document.getElementById('f-parcela-total');
+    const elDataFim = document.getElementById('f-dataFinal');
+    const elDataTrans = document.getElementById('f-data');
+
+    if (!elAtual || !elTotal || !elDataFim || !elDataTrans) return;
+
+    const atual = parseInt(elAtual.value) || 1;
+    const dataFim = elDataFim.value;
+    const dataTrans = elDataTrans.value; // YYYY-MM-DD
+
+    if (dataFim && dataFim.includes('/') && dataTrans) {
+      const partsFim = dataFim.split('/');
+      const mesFim = parseInt(partsFim[0]);
+      const anoFim = parseInt(partsFim[1]);
+      const [anoT, mesT] = dataTrans.split('-').map(Number);
+
+      if (mesFim && anoFim && mesT && anoT) {
+        const diff = (anoFim - anoT) * 12 + (mesFim - mesT);
+        if (diff >= 0) {
+          elTotal.value = atual + diff;
+        }
+      }
+    }
+  };
+
+  window.openRecorrenteDetail = async function (recId) {
+    showModal('<div style="padding:20px; text-align:center;"><div class="spinner"></div><p>Carregando histórico...</p></div>');
+    const compromissos = await DB.getHistoricoRecorrentes(currentPerson === 'todos' ? 'todos' : currentPerson);
+    const c = compromissos.find(x => x.id === recId);
+    if (!c) {
+      showModal('<div style="padding:20px; text-align:center;"><h3>Compromisso não encontrado</h3><button class="config-btn" onclick="closeModal()">Fechar</button></div>');
+      return;
+    }
+
+    showModal(`
+      <div class="modal-header">
+        <h3>🔁 Detalhes: ${c.descricao}</h3>
+        <button class="modal-close" onclick="closeModal()">✕</button>
+      </div>
+      <div class="recorrente-detail" style="padding: 10px 0;">
+        <div class="summary-grid" style="grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px;">
+          <div class="summary-card" style="padding: 12px; background: rgba(255,255,255,0.03); border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);">
+            <div class="label" style="font-size: 0.7rem; opacity: 0.6; text-transform: uppercase;">Total Pago</div>
+            <div class="value" style="font-size: 1.1rem; font-weight: 700; color: var(--text-primary);">${formatCurrency(c.valorTotalPago)}</div>
+          </div>
+          <div class="summary-card" style="padding: 12px; background: rgba(255,255,255,0.03); border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);">
+            <div class="label" style="font-size: 0.7rem; opacity: 0.6; text-transform: uppercase;">Meses Pagos</div>
+            <div class="value" style="font-size: 1.1rem; font-weight: 700; color: var(--text-primary);">${c.mesesPagos}</div>
+          </div>
+        </div>
+
+        <div style="background: rgba(255,255,255,0.02); border-radius: 12px; padding: 15px; margin-bottom: 20px; border: 1px solid rgba(255,255,255,0.05);">
+          <div style="display:flex; justify-content:space-between; margin-bottom:8px; font-size:0.9rem;">
+            <span style="opacity:0.6;">Categoria:</span> <strong>${c.categoria}</strong>
+          </div>
+          <div style="display:flex; justify-content:space-between; margin-bottom:8px; font-size:0.9rem;">
+            <span style="opacity:0.6;">Parcela Atual:</span> <span class="cat-badge" style="background:var(--purple); color:white; padding:2px 8px; border-radius:10px;">${c.parcelaMaisRecente}</span>
+          </div>
+          ${c.dataFinal ? `
+          <div style="display:flex; justify-content:space-between; margin-bottom:8px; font-size:0.9rem;">
+            <span style="opacity:0.6;">Data Fim:</span> <strong>${c.dataFinal}</strong>
+          </div>` : ''}
+          <div style="display:flex; justify-content:space-between; font-size:0.9rem;">
+            <span style="opacity:0.6;">Pessoa:</span> <strong>${c.pessoa}</strong>
+          </div>
+        </div>
+
+        <div class="section-title" style="margin-top: 20px; font-size: 1rem; border:none; padding-left:0;">
+          📜 Histórico de Pagamentos
+        </div>
+        <div class="transaction-list" style="max-height: 250px; overflow-y: auto; margin-top: 10px;">
+          ${c.historico.sort((a, b) => b.mes.localeCompare(a.mes)).map(h => {
+      const now = new Date();
+      const mesAtualProg = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const isFuturo = h.mes > mesAtualProg;
+
+      return `
+              <div class="transaction-item" onclick="closeModal(); openEditModal('${h.id}')" style="cursor:pointer; background: ${isFuturo ? 'rgba(10, 132, 255, 0.05)' : 'rgba(255,255,255,0.02)'}; margin-bottom: 8px; border: 1px solid ${isFuturo ? 'rgba(10, 132, 255, 0.2)' : 'rgba(255,255,255,0.03)'};">
+                <div class="info">
+                  <div class="name" style="font-size:0.9rem;">
+                    ${DB._getMesLabel(h.mes)}
+                    ${isFuturo ? '<span style="font-size:0.6rem; background:var(--blue-dim); color:var(--blue); padding:1px 4px; border-radius:4px; margin-left:5px;">PREVISTO</span>' : ''}
+                  </div>
+                  <div class="desc" style="font-size:0.75rem;">${h.parcela}</div>
+                </div>
+                <div class="amount ${isFuturo ? '' : 'negative'}" style="font-size:0.9rem; opacity: ${isFuturo ? '0.6' : '1'};">
+                  ${formatCurrency(h.valor)}
+                </div>
+              </div>
+            `;
+    }).join('')}
+        </div>
+      </div>
+    `);
+  };
 
   // ====== START ======
   if (document.readyState === 'loading') {
