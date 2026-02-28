@@ -704,6 +704,12 @@
         <div class="amount ${isReceita ? 'positive' : 'negative'}">
           ${isReceita ? '+' : '-'}${formatCurrency(Math.abs(t.valor))}
           ${t.data ? `<span class="date">${t.data}</span>` : ''}
+          ${t.detalhesCambio ? `
+            <div style="font-size: 0.65rem; opacity: 0.7; margin-top: 4px; color: var(--blue);">
+              💵 ${formatCurrency(Math.abs(parseFloat(t.detalhesCambio.valorUsd.replace(',', '.')) || 0), 'USD')} 
+              <span style="opacity:0.5">•</span> Câmbio: R$ ${t.detalhesCambio.cambio}
+            </div>
+          ` : ''}
           ${canEdit ? `<button class="delete-item-btn" onclick="event.stopPropagation(); deleteItem('${t.id}')" title="Excluir">🗑️</button>` : ''}
         </div>
       </div>
@@ -869,7 +875,7 @@
       <form id="add-form" onsubmit="submitAdd(event, '${tipo}')">
         <div class="form-group">
           <label>Data</label>
-          <input type="date" id="f-data" required>
+          <input type="date" id="f-data" onclick="this.showPicker()" required>
         </div>
         <div class="form-group">
           <label>Categoria</label>
@@ -881,12 +887,25 @@
         <div id="invest-fields" style="display:none; margin-bottom: 15px; padding: 12px; background: rgba(0, 122, 255, 0.05); border: 1px solid rgba(0, 122, 255, 0.2); border-radius: 8px;">
           <div class="form-group">
             <label>Selecionar Investimento</label>
-            <select id="f-invest-id" onchange="window.toggleNewInvestFields(this.value)">
+            <select id="f-invest-id" onchange="window.onInvestIdChange(this.value); window.toggleNewInvestFields(this.value)">
               <option value="">-- Selecione --</option>
               ${investOptions}
               <option value="novo" style="font-weight:bold; color:var(--blue);">➕ Novo Investimento...</option>
             </select>
           </div>
+
+          <div id="usd-details-container" style="display:none; margin-top:10px; border-top:1px solid rgba(255,255,255,0.05); padding-top:10px;">
+            <div style="font-size:0.75rem; color:var(--blue); font-weight:600; margin-bottom:10px;">💵 Detalhes do Câmbio (USD)</div>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+              <div class="form-group"><label>Valor USD</label><input type="text" id="f-valor-usd" placeholder="0.00" oninput="window.updateBRLFromUSD()"></div>
+              <div class="form-group"><label>Câmbio (BRL/USD)</label><input type="text" id="f-cambio" placeholder="5.45" oninput="window.updateBRLFromUSD()"></div>
+            </div>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+              <div class="form-group"><label>IOF (R$)</label><input type="text" id="f-iof" placeholder="0.00" oninput="window.updateBRLFromUSD()"></div>
+              <div class="form-group"><label>Taxas/Spread (R$)</label><input type="text" id="f-taxas" placeholder="0.00" oninput="window.updateBRLFromUSD()"></div>
+            </div>
+          </div>
+
           <div id="new-invest-fields" style="display:none; margin-top:10px; border-top:1px solid rgba(255,255,255,0.05); padding-top:10px;">
             <div class="form-group">
               <label>Nome do Novo Ativo</label>
@@ -894,7 +913,7 @@
             </div>
             <div class="form-group">
               <label>Moeda</label>
-              <select id="f-new-invest-moeda">
+              <select id="f-new-invest-moeda" onchange="window.onInvestIdChange('novo')">
                 <option value="BRL">Real (R$)</option>
                 <option value="USD">Dólar (US$)</option>
               </select>
@@ -971,6 +990,42 @@
     if (el) el.style.display = (val === 'novo') ? 'block' : 'none';
   };
 
+  window.onInvestIdChange = function (investId) {
+    const usdContainer = document.getElementById('usd-details-container');
+    if (!usdContainer) return;
+
+    if (investId === 'novo') {
+      const novaMoeda = document.getElementById('f-new-invest-moeda').value;
+      usdContainer.style.display = (novaMoeda === 'USD') ? 'block' : 'none';
+      return;
+    }
+
+    if (!investId) {
+      usdContainer.style.display = 'none';
+      return;
+    }
+
+    const personInv = (cachedInvestimentos && cachedInvestimentos.personInv) ? cachedInvestimentos.personInv : {};
+    const inv = personInv[investId];
+    if (inv && inv.moeda === 'USD') {
+      usdContainer.style.display = 'block';
+    } else {
+      usdContainer.style.display = 'none';
+    }
+  };
+
+  window.updateBRLFromUSD = function () {
+    const vUsd = parseFloat(document.getElementById('f-valor-usd').value.replace(',', '.')) || 0;
+    const camb = parseFloat(document.getElementById('f-cambio').value.replace(',', '.')) || 0;
+    const iof = parseFloat(document.getElementById('f-iof').value.replace(',', '.')) || 0;
+    const tax = parseFloat(document.getElementById('f-taxas').value.replace(',', '.')) || 0;
+
+    const totalBrl = (vUsd * camb) + iof + tax;
+    if (totalBrl > 0) {
+      document.getElementById('f-valor').value = totalBrl.toFixed(2);
+    }
+  };
+
   window.submitAdd = async function (e, tipo) {
     e.preventDefault();
     const dataInput = document.getElementById('f-data').value;
@@ -978,7 +1033,8 @@
     const dataFormatted = `${dateParts[2]}/${dateParts[1]}/${dateParts[0]}`;
 
     const categoria = document.getElementById('f-categoria').value;
-    const valor = parseFloat(document.getElementById('f-valor').value);
+    const valInput = document.getElementById('f-valor').value.replace(',', '.');
+    const valor = parseFloat(valInput) || 0;
     const pessoa = currentPerson === 'todos' ? 'gabriel' : currentPerson;
     const mesKey = monthKeys[currentMonth];
 
@@ -1005,17 +1061,23 @@
       if (investId) {
         const personInv = (cachedInvestimentos && cachedInvestimentos.personInv) ? cachedInvestimentos.personInv : {};
         const inv = personInv[investId];
+
+        // Se for USD, usamos o valor em dólares para atualizar o saldo do investimento
+        const isUSD = inv && inv.moeda === 'USD';
+        const vUsdInput = document.getElementById('f-valor-usd')?.value.replace(',', '.');
+        const valorParaAjuste = (isUSD && vUsdInput) ? (parseFloat(vUsdInput) || 0) : valor;
+
         if (categoria === 'Retirada Investimento') {
-          if (inv && inv.valor < valor) {
+          if (inv && inv.valor < valorParaAjuste) {
             alert(`Saldo insuficiente no investimento ${inv.nome}. Saldo disponível: ${formatCurrency(inv.valor, inv.moeda)}`);
             return;
           }
           // Decrementar saldo
-          await DB.updateInvestimento(investId, { valor: inv.valor - valor });
+          await DB.updateInvestimento(investId, { valor: inv.valor - valorParaAjuste });
         } else {
           // Incrementar saldo (Aporte/Investimento)
           const atualVal = inv ? inv.valor : 0;
-          await DB.updateInvestimento(investId, { valor: atualVal + valor });
+          await DB.updateInvestimento(investId, { valor: atualVal + valorParaAjuste });
         }
       }
     }
@@ -1037,7 +1099,13 @@
       dataFinal: isRec ? (document.getElementById('f-dataFinal').value || null) : null,
       recorrenteId: isRec ? (database.ref().push().key) : null,
       dataInicio: isRec ? dataFormatted : null,
-      investId: investId || null // Vincular ID do investimento à transação
+      investId: investId || null,
+      detalhesCambio: (document.getElementById('usd-details-container').style.display === 'block') ? {
+        valorUsd: document.getElementById('f-valor-usd').value,
+        cambio: document.getElementById('f-cambio').value,
+        iof: document.getElementById('f-iof').value,
+        taxas: document.getElementById('f-taxas').value
+      } : null
     };
 
     const key = await DB.addTransacao(dados);
@@ -1082,7 +1150,7 @@
     showModal(`
       <div class="modal-header"><h3>✏️ Editar ${tipo === 'receita' ? 'Receita' : 'Gasto'}</h3><button class="modal-close" onclick="closeModal()">✕</button></div>
       <form id="edit-form" onsubmit="submitEdit(event, '${id}', '${tipo}')">
-        <div class="form-group"><label>Data</label><input type="date" id="f-data" value="${dateVal}" oninput="window.updateParcelaLogic()"></div>
+        <div class="form-group"><label>Data</label><input type="date" id="f-data" value="${dateVal}" onclick="this.showPicker()" oninput="window.updateParcelaLogic()"></div>
         <div class="form-group">
           <label>Categoria</label>
           <select id="f-categoria" onchange="window.toggleInvestFields(this.value)">
@@ -1093,10 +1161,22 @@
         <div id="invest-fields" style="display:${(t.categoria === 'Investimento' || t.categoria === 'Retirada Investimento') ? 'block' : 'none'}; margin-bottom: 15px; padding: 12px; background: rgba(0, 122, 255, 0.05); border: 1px solid rgba(0, 122, 255, 0.2); border-radius: 8px;">
           <div class="form-group">
             <label>Selecionar Investimento</label>
-            <select id="f-invest-id">
+            <select id="f-invest-id" onchange="window.onInvestIdChange(this.value)">
               <option value="">-- Selecione --</option>
               ${investOptions}
             </select>
+          </div>
+
+          <div id="usd-details-container" style="display:none; margin-top:10px; border-top:1px solid rgba(255,255,255,0.05); padding-top:10px;">
+            <div style="font-size:0.75rem; color:var(--blue); font-weight:600; margin-bottom:10px;">💵 Detalhes do Câmbio (USD)</div>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+              <div class="form-group"><label>Valor USD</label><input type="text" id="f-valor-usd" value="${t.detalhesCambio?.valorUsd || ''}" placeholder="0.00" oninput="window.updateBRLFromUSD()"></div>
+              <div class="form-group"><label>Câmbio (BRL/USD)</label><input type="text" id="f-cambio" value="${t.detalhesCambio?.cambio || ''}" placeholder="5.45" oninput="window.updateBRLFromUSD()"></div>
+            </div>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+              <div class="form-group"><label>IOF (R$)</label><input type="text" id="f-iof" value="${t.detalhesCambio?.iof || ''}" placeholder="0.00" oninput="window.updateBRLFromUSD()"></div>
+              <div class="form-group"><label>Taxas/Spread (R$)</label><input type="text" id="f-taxas" value="${t.detalhesCambio?.taxas || ''}" placeholder="0.00" oninput="window.updateBRLFromUSD()"></div>
+            </div>
           </div>
           <small style="opacity:0.6; font-size:0.7rem;">Na edição, para novos ativos, crie-os primeiro na aba investimentos.</small>
         </div>
@@ -1121,6 +1201,10 @@
         <button type="submit" class="config-btn save" style="width:100%; margin-top: 12px;">💾 Salvar Alterações</button>
       </form>
     `);
+
+    // Iniciar campos se necessário
+    window.toggleInvestFields(t.categoria);
+    window.onInvestIdChange(t.investId);
   };
 
   window.submitEdit = async function (e, id, tipo) {
@@ -1134,7 +1218,8 @@
     if (dataInput) { const dp = dataInput.split('-'); dataFormatted = dp[2] + '/' + dp[1] + '/' + dp[0]; }
 
     const categoria = document.getElementById('f-categoria').value;
-    const valor = parseFloat(document.getElementById('f-valor').value);
+    const valInput = document.getElementById('f-valor').value.replace(',', '.');
+    const valor = parseFloat(valInput) || 0;
     const pessoa = transacaoOriginal.pessoa;
     const investIdNovo = document.getElementById('f-invest-id')?.value || null;
     const investIdAntigo = transacaoOriginal.investId || null;
@@ -1147,7 +1232,14 @@
       const invAntigo = personInv[investIdAntigo];
       if (invAntigo) {
         const fator = transacaoOriginal.categoria === 'Retirada Investimento' ? 1 : -1;
-        await DB.updateInvestimento(investIdAntigo, { valor: invAntigo.valor + (transacaoOriginal.valor * fator) });
+
+        // Se o investimento antigo era USD, tentamos reverter usando o valor em USD original
+        const isUSD = invAntigo.moeda === 'USD';
+        const valorReverter = (isUSD && transacaoOriginal.detalhesCambio?.valorUsd)
+          ? (parseFloat(transacaoOriginal.detalhesCambio.valorUsd.replace(',', '.')) || 0)
+          : transacaoOriginal.valor;
+
+        await DB.updateInvestimento(investIdAntigo, { valor: invAntigo.valor + (valorReverter * fator) });
       }
     }
 
@@ -1159,14 +1251,18 @@
         const invNovo = invNovoSnap.val();
 
         if (invNovo) {
+          const isUSD = invNovo.moeda === 'USD';
+          const vUsdInput = document.getElementById('f-valor-usd')?.value.replace(',', '.');
+          const valorParaAjuste = (isUSD && vUsdInput) ? (parseFloat(vUsdInput) || 0) : valor;
+
           if (categoria === 'Retirada Investimento') {
-            if (invNovo.valor < valor) {
+            if (invNovo.valor < valorParaAjuste) {
               alert(`Saldo insuficiente no investimento ${invNovo.nome}.`);
               return;
             }
-            await DB.updateInvestimento(investIdNovo, { valor: invNovo.valor - valor });
+            await DB.updateInvestimento(investIdNovo, { valor: invNovo.valor - valorParaAjuste });
           } else {
-            await DB.updateInvestimento(investIdNovo, { valor: invNovo.valor + valor });
+            await DB.updateInvestimento(investIdNovo, { valor: invNovo.valor + valorParaAjuste });
           }
         }
       }
@@ -1193,7 +1289,13 @@
       recorrenteId: recId,
       dataInicio: dataIni,
       mes: transacaoOriginal.mes,
-      investId: investIdNovo
+      investId: investIdNovo,
+      detalhesCambio: (document.getElementById('usd-details-container').style.display === 'block') ? {
+        valorUsd: document.getElementById('f-valor-usd').value,
+        cambio: document.getElementById('f-cambio').value,
+        iof: document.getElementById('f-iof').value,
+        taxas: document.getElementById('f-taxas').value
+      } : null
     };
 
     let propagar = false;
@@ -1425,7 +1527,8 @@
   }
 
   window.onInvestValorChange = function (inputEl, valorAntigo) {
-    const novoValor = parseFloat(inputEl.value) || 0;
+    const valStr = inputEl.value.replace(',', '.');
+    const novoValor = parseFloat(valStr) || 0;
     const diff = novoValor - valorAntigo;
     const container = document.getElementById('tipo-ajuste-container');
     const select = document.getElementById('inv-tipo-ajuste');
@@ -1433,16 +1536,17 @@
 
     if (Math.abs(diff) >= 0.01) {
       container.style.display = 'block';
+      select.setAttribute('required', 'required');
       if (diff > 0) {
         label.innerText = '💎 Origem do Aumento';
-        select.innerHTML = '<option value="aporte">💰 Aporte Próprio (Gasto)</option><option value="rendimento">📈 Rendimento/Valorização (Sem Transação)</option>';
+        select.innerHTML = '<option value="" disabled selected>-- Selecione --</option><option value="aporte">💰 Aporte Próprio (Gasto)</option><option value="rendimento">📈 Rendimento/Valorização (Sem Transação)</option>';
       } else {
         label.innerText = '📉 Natureza da Redução';
-        select.innerHTML = '<option value="resgate">💰 Resgate/Retirada (Receita)</option><option value="prejuizo">📉 Oscilação Negativa (Sem Transação)</option>';
+        select.innerHTML = '<option value="" disabled selected>-- Selecione --</option><option value="resgate">💰 Resgate/Retirada (Receita)</option><option value="prejuizo">📉 Oscilação Negativa (Sem Transação)</option>';
       }
     } else {
       container.style.display = 'none';
-      select.innerHTML = '<option value="aporte">💰 Aporte Próprio (Gasto)</option>';
+      select.removeAttribute('required');
     }
   };
 
@@ -1500,10 +1604,11 @@
         <input type="text" id="inv-nome" value="${inv.nome}" required>
       </div>
       <div class="form-group">
-        <label>Valor</label>
-        <input type="number" id="inv-valor" step="0.01" min="0" value="${inv.valor}" required 
-               oninput="window.onInvestValorChange(this, ${inv.valor})">
-      </div>
+      <label>Valor</label>
+      <input type="text" id="inv-valor" value="${inv.valor}" required 
+             oninput="window.onInvestValorChange(this, ${inv.valor})">
+      <small style="opacity:0.5; font-size:0.7rem;">Use ponto ou vírgula para decimais.</small>
+    </div>
       <div class="form-group">
         <label>Moeda</label>
         <select id="inv-moeda">
@@ -1512,13 +1617,14 @@
         </select>
       </div>
 
-      <div id="tipo-ajuste-container" style="display:none; margin-top: 10px; padding: 12px; background: rgba(0, 122, 255, 0.05); border: 1px solid rgba(0, 122, 255, 0.2); border-radius: 8px;">
-        <label id="tipo-ajuste-label" style="font-weight:600; color:var(--blue); display:block; margin-bottom:8px;">💎 Origem do Aumento</label>
-        <select id="inv-tipo-ajuste" style="background: var(--bg-card); border-color: rgba(0, 122, 255, 0.3);">
-          <option value="aporte">💰 Aporte Próprio (Gasto)</option>
-          <option value="rendimento">📈 Rendimento/Valorização (Sem Transação)</option>
-        </select>
-      </div>
+      <div id="tipo-ajuste-container" style="display:none; margin-top: 10px; padding: 12px; background: rgba(0, 122, 255, 0.08); border: 1px solid rgba(0, 122, 255, 0.3); border-radius: 12px;">
+      <label id="tipo-ajuste-label" style="font-weight:600; color:var(--blue); display:block; margin-bottom:10px; font-size:0.85rem;">💎 Natureza da Alteração</label>
+      <select id="inv-tipo-ajuste" required style="width:100%; padding:10px; border-radius:8px; background: var(--bg-card); border: 1px solid rgba(255,255,255,0.1); color: var(--text-primary); font-size:0.9rem;">
+        <option value="" disabled selected>-- Selecione o motivo --</option>
+        <option value="aporte">💰 Aporte Próprio (Gasto)</option>
+        <option value="rendimento">📈 Rendimento/Valorização (Sem Transação)</option>
+      </select>
+    </div>
       <button type="submit" class="config-btn save" style="width:100%; margin-top: 12px;">💾 Atualizar</button>
     </form>
   `);
@@ -1527,7 +1633,8 @@
   window.submitInvestimento = async function (e, id = null) {
     e.preventDefault();
     const nome = document.getElementById('inv-nome').value;
-    const valorNovo = parseFloat(document.getElementById('inv-valor').value);
+    const valStr = document.getElementById('inv-valor').value.replace(',', '.');
+    const valorNovo = parseFloat(valStr) || 0;
     const moeda = document.getElementById('inv-moeda').value;
     const pessoa = currentPerson === 'todos' ? 'gabriel' : currentPerson;
     const mesKey = monthKeys[currentMonth];
