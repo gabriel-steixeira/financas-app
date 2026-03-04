@@ -7,7 +7,6 @@
 
   // State
   let currentPerson = 'todos';
-  let currentMonth = 'fevereiro';
   let currentPage = 'dashboard';
   let cachedData = null;
   let cachedInvestimentos = { personInv: {}, totalInfo: { total: 0, cotacaoDolar: 5.45 } };
@@ -16,14 +15,35 @@
   let autoGenChecked = false;
   let currentPagamentosTab = 'recorrentes'; // 'faturas' ou 'recorrentes'
 
-  // Meses dinâmicos - base fixa + expandível
-  let months = ['novembro', 'dezembro', 'janeiro', 'fevereiro'];
-  let monthKeys = { novembro: '2025-11', dezembro: '2025-12', janeiro: '2026-01', fevereiro: '2026-02' };
-  let monthLabels = { novembro: 'Nov', dezembro: 'Dez', janeiro: 'Jan', fevereiro: 'Fev' };
-  let monthFull = { novembro: 'Novembro 2025', dezembro: 'Dezembro 2025', janeiro: 'Janeiro 2026', fevereiro: 'Fevereiro 2026' };
-
   const MONTH_NAMES = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
   const MONTH_ABBR = ['', 'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+
+  // Meses dinâmicos: últimos 3 meses + mês atual (recalculado ao carregar)
+  function _buildBaseMonths() {
+    const now = new Date();
+    const r = { months: [], monthKeys: {}, monthLabels: {}, monthFull: {} };
+    for (let i = 3; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const ano = d.getFullYear();
+      const mesNum = d.getMonth() + 1;
+      const mesKey = `${ano}-${String(mesNum).padStart(2, '0')}`;
+      const slug = MONTH_NAMES[mesNum].toLowerCase();
+      r.months.push(slug);
+      r.monthKeys[slug] = mesKey;
+      r.monthLabels[slug] = MONTH_ABBR[mesNum];
+      r.monthFull[slug] = `${MONTH_NAMES[mesNum]} ${ano}`;
+    }
+    return r;
+  }
+
+  const _base = _buildBaseMonths();
+  let months = _base.months;
+  let monthKeys = _base.monthKeys;
+  let monthLabels = _base.monthLabels;
+  let monthFull = _base.monthFull;
+  let currentMonth = months[months.length - 1]; // mês atual como padrão
+
+
 
   function addMonthToSystem(mesKey) {
     const [ano, mes] = mesKey.split('-');
@@ -31,12 +51,19 @@
     const slug = MONTH_NAMES[mesNum].toLowerCase();
     if (months.includes(slug) && monthKeys[slug] === mesKey) return;
     // Se o slug já existe (ex: janeiro de outro ano), usar slug+ano
-    const finalSlug = months.includes(slug) ? `${slug}${ano}` : slug;
+    const finalSlug = (months.includes(slug) && monthKeys[slug] !== mesKey) ? `${slug}${ano}` : slug;
     if (months.includes(finalSlug)) return;
     months.push(finalSlug);
     monthKeys[finalSlug] = mesKey;
     monthLabels[finalSlug] = MONTH_ABBR[mesNum];
     monthFull[finalSlug] = `${MONTH_NAMES[mesNum]} ${ano}`;
+
+    // Ordenar os meses cronologicamente
+    months.sort((a, b) => {
+      const keyA = monthKeys[a] || '';
+      const keyB = monthKeys[b] || '';
+      return keyA.localeCompare(keyB);
+    });
   }
 
   const app = document.getElementById('app');
@@ -129,6 +156,9 @@
         const now = new Date();
         const mesAtualReal = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
+        // Garantir que o mês atual também esteja no sistema
+        addMonthToSystem(mesAtualReal);
+
         // Verificar se o próximo mês já existe, senão criar
         const proximoMesKey = await DB.verificarEAutoGerarMes(mesAtualReal);
         if (proximoMesKey) {
@@ -185,6 +215,12 @@
 
     app.innerHTML = sections.join('');
     loading = false;
+
+    // Rolar o seletor de meses para o mês ativo
+    requestAnimationFrame(() => {
+      const activeBtn = document.querySelector('.month-btn.active');
+      if (activeBtn) activeBtn.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+    });
   }
 
   function renderDashboardHidden() {
@@ -482,7 +518,16 @@
         </div>
       ` : keys.map((key, i) => {
       const f = faturas[key];
-      const itens = Array.isArray(f.itens) ? f.itens : Object.values(f.itens || {});
+      const itensRaw = Array.isArray(f.itens) ? f.itens : Object.values(f.itens || {});
+      // Ordenar: mais recente no topo; itens sem data ficam no final
+      const itens = [...itensRaw].sort((a, b) => {
+        if (!a.data && !b.data) return 0;
+        if (!a.data) return 1;
+        if (!b.data) return -1;
+        // Formato DD/MM/AAAA → converter para AAAA-MM-DD para comparar
+        const toISO = d => d.split('/').reverse().join('-');
+        return toISO(b.data).localeCompare(toISO(a.data));
+      });
       return `
             <div class="fatura-card" data-fatura="${key}" style="animation-delay: ${i * 80}ms">
               <div class="fatura-header" onclick="toggleFatura('${key}')">
@@ -1427,7 +1472,7 @@
       '<form onsubmit="submitAddFaturaItem(event, \'' + faturaId + '\')">' +
       '<div class="form-group"><label>Nome</label><input type="text" id="fi-nome" required></div>' +
       '<div class="form-group"><label>Valor (R$)</label><input type="number" id="fi-valor" step="0.01" required></div>' +
-      '<div class="form-group"><label>Data</label><input type="text" id="fi-data" placeholder="DD/MM/AAAA"></div>' +
+      '<div class="form-group"><label>Data *</label><input type="text" id="fi-data" placeholder="DD/MM/AAAA" required pattern="\\d{2}/\\d{2}/\\d{4}"></div>' +
       '<div class="form-group"><label>Parcela</label><input type="text" id="fi-parcela" placeholder="Ex: 1 de 10"></div>' +
       '<button type="submit" class="config-btn save" style="width:100%; margin-top: 12px;">✅ Adicionar</button></form>'
     );
@@ -1447,12 +1492,13 @@
   window.openEditFaturaItemModal = function (faturaId, itemId) {
     const f = cachedData.faturas[faturaId]; if (!f) return;
     const item = f.itens.find(function (i) { return i.id === itemId; }); if (!item) return;
+    const semData = !item.data;
     showModal(
       '<div class="modal-header"><h3>✏️ Editar Item</h3><button class="modal-close" onclick="closeModal()">✕</button></div>' +
       '<form onsubmit="submitEditFaturaItem(event, \'' + faturaId + '\', \'' + itemId + '\')">' +
       '<div class="form-group"><label>Nome</label><input type="text" id="fi-nome" value="' + item.nome.replace(/"/g, '&quot;') + '" required></div>' +
       '<div class="form-group"><label>Valor (R$)</label><input type="number" id="fi-valor" step="0.01" value="' + item.valor + '" required></div>' +
-      '<div class="form-group"><label>Data</label><input type="text" id="fi-data" value="' + (item.data || '') + '" placeholder="DD/MM/AAAA"></div>' +
+      '<div class="form-group"><label>Data *' + (semData ? ' <small style="color:var(--orange)">(sem data — obrigatório)</small>' : '') + '</label><input type="text" id="fi-data" value="' + (item.data || '') + '" placeholder="DD/MM/AAAA" required pattern="\\d{2}/\\d{2}/\\d{4}"></div>' +
       '<div class="form-group"><label>Parcela</label><input type="text" id="fi-parcela" value="' + (item.parcela || '') + '" placeholder="Ex: 1 de 10"></div>' +
       '<button type="submit" class="config-btn save" style="width:100%; margin-top: 12px;">💾 Salvar</button>' +
       '<button type="button" class="config-btn test" style="width:100%; margin-top: 8px; background: var(--red-dim); color: var(--red);" onclick="deleteFaturaItemUI(\'' + faturaId + '\', \'' + itemId + '\')">🗑️ Excluir</button></form>'
