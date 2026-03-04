@@ -55,8 +55,8 @@
     --cat-extra-bg: var(--teal-dim);
     --cat-investimento: var(--purple);
     --cat-investimento-bg: var(--purple-dim);
-    --cat-boleto: var(--orange);
-    --cat-boleto-bg: var(--orange-dim);
+    --cat-boleto: var(--pink);
+    --cat-boleto-bg: var(--pink-dim);
     --cat-fatura: var(--red);
     --cat-fatura-bg: var(--red-dim);
     --cat-presente: var(--blue);
@@ -701,6 +701,7 @@ body {
     border: 1px solid var(--border);
     overflow: hidden;
     animation: slideUp 0.4s ease backwards;
+    scroll-margin-top: 100px;
 }
 
 .fatura-header {

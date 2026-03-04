@@ -14,6 +14,7 @@
   let loading = false;
   let autoGenChecked = false;
   let currentPagamentosTab = 'recorrentes'; // 'faturas' ou 'recorrentes'
+  let openFaturas = new Set();
 
   const MONTH_NAMES = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
   const MONTH_ABBR = ['', 'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
@@ -130,7 +131,7 @@
       if (useFirebase && typeof DB !== 'undefined') {
         try {
           const d = await DB.getDadosMes(currentPerson, mesKey);
-          chartData.push({ income: d.totalReceitas, expense: d.totalGastos });
+          chartData.push({ income: d.totalReceitas, expense: d.totalGastos + (d.totalFaturas || 0) });
           continue;
         } catch (e) { /* fallback */ }
       }
@@ -307,9 +308,10 @@
         <div class="balance-card">
           <div class="label">Saldo do Mês</div>
           <div class="amount ${d.saldo >= 0 ? 'positive' : 'negative'}">${formatCurrency(d.saldo)}</div>
-          <div class="detail">
-            <span><span class="dot green"></span> Receitas: ${formatCurrency(d.totalReceitas)}</span>
-            <span><span class="dot red"></span> Gastos: ${formatCurrency(d.totalGastos)}</span>
+          <div class="detail" style="display: flex; gap: 15px; flex-wrap: wrap; justify-content: center;">
+            <span><span class="dot green" style="background: var(--green)"></span> Receitas: ${formatCurrency(d.totalReceitas)}</span>
+            <span><span class="dot red" style="background: var(--red)"></span> Despesas: ${formatCurrency(d.totalGastos)}</span>
+            <span><span class="dot orange" style="background: var(--orange)"></span> Cartões: ${formatCurrency(d.totalFaturas || 0)}</span>
           </div>
         </div>
 
@@ -321,7 +323,7 @@
           </div>
           <div class="summary-card" onclick="navigateTo('gastos')">
             <div class="icon red">📤</div>
-            <div class="label">Gastos</div>
+            <div class="label">Despesas</div>
             <div class="value negative">${formatCurrency(d.totalGastos)}</div>
           </div>
           <div class="summary-card" onclick="navigateTo('pagamentos')">
@@ -402,9 +404,15 @@
       byCategory[g.categoria].count++;
     });
 
+    let donutTotal = total;
+    if (d.totalFaturas > 0) {
+      byCategory['Cartões'] = { total: d.totalFaturas, count: Object.keys(d.faturas || {}).length };
+      donutTotal += d.totalFaturas;
+    }
+
     const categoryColors = {
-      'Investimento': 'var(--purple)', 'Boleto': 'var(--orange)',
-      'Fatura cartão': 'var(--red)', 'Presente': 'var(--blue)',
+      'Investimento': 'var(--purple)', 'Boleto': 'var(--pink)',
+      'Fatura cartão': 'var(--red)', 'Cartões': 'var(--orange)', 'Presente': 'var(--blue)',
       'Transporte': 'var(--yellow)', 'Alimentação': 'var(--teal)',
       'Coleta': 'var(--teal)',
     };
@@ -412,10 +420,11 @@
     return `
       <div class="page active" id="page-gastos">
         <div class="balance-card" style="background: linear-gradient(135deg, #2e0a0a 0%, #3d0f0f 50%, #4d1616 100%);">
-          <div class="label">Total de Gastos</div>
-          <div class="amount negative">${formatCurrency(total)}</div>
-          <div class="detail">
-            <span>${d.gastos.length} saídas neste mês</span>
+          <div class="label">Total de Saídas (Despesas + Cartões)</div>
+          <div class="amount negative">${formatCurrency(total + (d.totalFaturas || 0))}</div>
+          <div class="detail" style="display: flex; gap: 15px; flex-wrap: wrap; justify-content: center;">
+            <span><span class="dot red" style="background: var(--red)"></span> Despesas: ${formatCurrency(total)}</span>
+            <span><span class="dot orange" style="background: var(--orange)"></span> Cartões: ${formatCurrency(d.totalFaturas || 0)}</span>
           </div>
         </div>
 
@@ -423,14 +432,14 @@
           <h3>📊 Por Categoria</h3>
           <div class="donut-container">
             <svg class="donut" viewBox="0 0 42 42">
-              ${total > 0 ? renderDonut(byCategory, categoryColors, total) : ''}
+              ${donutTotal > 0 ? renderDonut(byCategory, categoryColors, donutTotal) : ''}
             </svg>
             <div class="donut-legend">
               ${Object.entries(byCategory).map(([cat, info]) => `
                 <div class="legend-item">
                   <span class="legend-dot" style="background: ${categoryColors[cat] || 'var(--text-tertiary)'}"></span>
                   <span class="legend-label">${cat}</span>
-                  <span class="legend-value">${total > 0 ? Math.round(info.total / total * 100) : 0}%</span>
+                  <span class="legend-value">${donutTotal > 0 ? Math.round(info.total / donutTotal * 100) : 0}%</span>
                 </div>
               `).join('')}
             </div>
@@ -528,8 +537,9 @@
         const toISO = d => d.split('/').reverse().join('-');
         return toISO(b.data).localeCompare(toISO(a.data));
       });
+      const isOpenClass = openFaturas.has(key) ? ' open' : '';
       return `
-            <div class="fatura-card" data-fatura="${key}" style="animation-delay: ${i * 80}ms">
+            <div class="fatura-card${isOpenClass}" data-fatura="${key}" style="animation-delay: ${i * 80}ms">
               <div class="fatura-header" onclick="toggleFatura('${key}')">
                 <div class="left">
                   <div class="card-icon">💳</div>
@@ -882,6 +892,7 @@
 
   // ====== MODAL CRUD ======
   function showModal(html) {
+    window.needRenderAfterModal = false;
     const overlay = document.getElementById('modal-overlay');
     const modal = document.getElementById('modal');
     if (overlay && modal) {
@@ -898,7 +909,14 @@
     if (overlay && modal) {
       overlay.classList.remove('show');
       modal.classList.remove('show');
-      setTimeout(() => { overlay.style.display = 'none'; modal.style.display = 'none'; }, 300);
+      setTimeout(() => {
+        overlay.style.display = 'none';
+        modal.style.display = 'none';
+        if (window.needRenderAfterModal) {
+          window.needRenderAfterModal = false;
+          render();
+        }
+      }, 300);
     }
   };
 
@@ -1480,13 +1498,29 @@
 
   window.submitAddFaturaItem = async function (e, faturaId) {
     e.preventDefault();
+    const btnSave = e.target.querySelector('button[type="submit"]');
+    const oldText = btnSave.innerHTML;
+    btnSave.innerHTML = '⏳ Salvando...';
+    btnSave.disabled = true;
+
     await DB.addFaturaItem(faturaId, {
       nome: document.getElementById('fi-nome').value,
       valor: parseFloat(document.getElementById('fi-valor').value),
       data: document.getElementById('fi-data').value || '',
       parcela: document.getElementById('fi-parcela').value || ''
     });
-    closeModal(); await render();
+
+    document.getElementById('fi-nome').value = '';
+    document.getElementById('fi-valor').value = '';
+    document.getElementById('fi-nome').focus();
+
+    btnSave.innerHTML = '✅ Adicionado! (Você pode adicionar outro)';
+    setTimeout(() => {
+      btnSave.innerHTML = '✅ Adicionar Outro';
+      btnSave.disabled = false;
+    }, 1500);
+
+    window.needRenderAfterModal = true;
   };
 
   window.openEditFaturaItemModal = function (faturaId, itemId) {
@@ -1908,7 +1942,17 @@
 
   window.toggleFatura = function (key) {
     const card = document.querySelector(`.fatura-card[data-fatura="${key}"]`);
-    if (card) card.classList.toggle('open');
+    if (card) {
+      const isOpen = card.classList.toggle('open');
+      if (isOpen) {
+        openFaturas.add(key);
+        setTimeout(() => {
+          card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 150);
+      } else {
+        openFaturas.delete(key);
+      }
+    }
   };
 
   window.testFirebaseConnection = async function () {

@@ -498,16 +498,21 @@ const DB = {
             this.getFaturas(pessoa, mes)
         ]);
 
+        // Ignorar Gastos legados que eram gerados pelo sistema para não duplicar o valor com as Faturas na nova arquitetura
+        const gastosFiltrados = transacoes.gastos.filter(g => g.categoria !== 'Fatura cartão');
+
         const totalReceitas = transacoes.receitas.reduce((sum, r) => sum + r.valor, 0);
-        const totalGastos = transacoes.gastos.reduce((sum, g) => sum + g.valor, 0);
-        const saldo = totalReceitas - totalGastos;
+        const totalGastos = gastosFiltrados.reduce((sum, g) => sum + g.valor, 0);
+        const totalFaturas = Object.values(faturas).reduce((sum, f) => sum + (f.total || 0), 0);
+        const saldo = totalReceitas - (totalGastos + totalFaturas);
 
         return {
             receitas: transacoes.receitas,
-            gastos: transacoes.gastos,
+            gastos: gastosFiltrados,
             faturas,
             totalReceitas,
             totalGastos,
+            totalFaturas,
             saldo
         };
     },
@@ -627,22 +632,6 @@ const DB = {
                             totalFatura,
                             itens: itensObj
                         };
-
-                        // Criar transação de despesa da fatura
-                        if (totalFatura > 0) {
-                            const despKey = database.ref('transacoes').push().key;
-                            const vencimento = fatura.vencimento || '';
-                            const dataDespesa = vencimento ? this._formatDateForMonth(vencimento, proximoMesKey) : this._getFirstDayOfMonth(proximoMesKey);
-                            updates[`transacoes/${despKey}`] = {
-                                pessoa,
-                                mes: proximoMesKey,
-                                tipo: 'despesa',
-                                data: dataDespesa,
-                                categoria: 'Fatura cartão',
-                                descricao: `Fatura do cartão ${fatura.cartao}`,
-                                valor: totalFatura
-                            };
-                        }
                     }
                 }
             } catch (e) {
