@@ -565,7 +565,7 @@
                     <div class="item-value">${formatCurrency(item.valor)}</div>
                   </div>
                 `).join('')}
-                ${isIndividual ? `<div class="fatura-item" style="justify-content:center; opacity:0.6; cursor:pointer;" onclick="openAddFaturaItemModal('${key}')">➕ Adicionar item</div>` : ''}
+                ${isIndividual ? `<div class="fatura-add-item-container"><div class="fatura-item" style="justify-content:center; opacity:0.8; cursor:pointer; font-weight:600; color:var(--blue);" onclick="openAddFaturaItemModal('${key}')">➕ Adicionar item</div></div>` : ''}
               </div>
             </div>
           `;

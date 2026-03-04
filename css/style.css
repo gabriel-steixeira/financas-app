@@ -761,12 +761,22 @@ body {
 
 .fatura-items {
     max-height: 0;
-    overflow: hidden;
+    overflow-y: auto;
     transition: max-height 0.4s ease;
+    scrollbar-width: thin;
 }
 
 .fatura-card.open .fatura-items {
-    max-height: 2000px;
+    max-height: 480px;
+    /* ~12-15 items depending on content */
+}
+
+.fatura-add-item-container {
+    position: sticky;
+    bottom: 0;
+    background: var(--bg-card);
+    border-top: 1px solid var(--border);
+    z-index: 5;
 }
 
 .fatura-item {
